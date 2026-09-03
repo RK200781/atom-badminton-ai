@@ -1,22 +1,31 @@
-# 仮想環境
+# ===== 環境依存・再現可能なもの =====
+# requirements.txt があれば再構築できるため、仮想環境自体はGit管理しない
 venv/
+venv_win/
+__pycache__/
 
-# 環境変数・APIキー(重要)
+# ===== 秘密情報 =====
+# APIキーなど。漏洩防止のため必ず除外
 .env
 
-# 学習済みモデルの重みファイル
+# ===== 容量が大きい生成物 =====
+# download_datasets.py を再実行すれば取得できるため、データセット本体は管理しない
+datasets/
+
+# 学習を再実行すれば生成できるため、モデルの重み・学習ログは管理しない
 *.pt
 *.pth
+runs/
 
-# データセット・画像・動画(容量が大きいのでGit管理外)
-datasets/
-*.mp4
-*.avi
+# ===== プライバシー・容量 =====
+# 撮影した画像・動画(自分が写り込む可能性があるものを含む)
+images/
 *.jpg
 *.jpeg
 *.png
+*.mp4
+*.avi
 
-# Pythonキャッシュ
-__pycache__/
-*.pyc
-.ipynb_checkpoints/
+# 実行のたびに増える計測データ(バージョン管理する意味が薄い)
+trajectories/
+shuttle_trajectory*.csv

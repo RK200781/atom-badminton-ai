@@ -1,0 +1,94 @@
+calibration_date: '2026-09-03T15:00:34.820696'
+checkerboard_inner_corners:
+  cols: 9
+  rows: 6
+square_size_mm: 25.0
+image_resolution:
+  width: 3840
+  height: 2160
+num_images_used: 27
+num_images_failed: 1
+failed_images:
+- WIN_20260903_14_43_35_Pro.jpg
+manually_excluded_images:
+- WIN_20260903_14_38_39_Pro.jpg
+- WIN_20260903_14_40_17_Pro.jpg
+camera_matrix:
+  fx: 2276.8407579713057
+  fy: 2278.1366820556054
+  cx: 1904.0396899984394
+  cy: 1090.3279122993133
+  full_matrix:
+  - - 2276.8407579713057
+    - 0.0
+    - 1904.0396899984394
+  - - 0.0
+    - 2278.1366820556054
+    - 1090.3279122993133
+  - - 0.0
+    - 0.0
+    - 1.0
+distortion_coefficients:
+- -0.025381952342451757
+- 0.16895030181435117
+- -0.002445786190195688
+- -0.0005670419011315248
+- -0.22777481190138502
+reprojection_error:
+  rms_overall: 1.2573449832935522
+  cv2_calibrate_camera_ret: 1.2573472636731378
+  per_image:
+  - file: WIN_20260903_14_36_53_Pro.jpg
+    error: 2.454436063201964
+  - file: WIN_20260903_14_40_55_Pro.jpg
+    error: 1.6997161462037282
+  - file: WIN_20260903_14_41_03_Pro.jpg
+    error: 1.708665355475317
+  - file: WIN_20260903_14_41_11_Pro.jpg
+    error: 1.1450038180718705
+  - file: WIN_20260903_14_41_19_Pro.jpg
+    error: 1.5626129335633991
+  - file: WIN_20260903_14_41_26_Pro.jpg
+    error: 1.4244901264209962
+  - file: WIN_20260903_14_41_33_Pro.jpg
+    error: 1.5855064425710534
+  - file: WIN_20260903_14_41_41_Pro.jpg
+    error: 1.2992091759505038
+  - file: WIN_20260903_14_41_50_Pro.jpg
+    error: 1.6152697563610003
+  - file: WIN_20260903_14_42_01_Pro.jpg
+    error: 0.9714359070649033
+  - file: WIN_20260903_14_42_08_Pro.jpg
+    error: 1.0324732999075
+  - file: WIN_20260903_14_42_14_Pro.jpg
+    error: 0.9473847141397459
+  - file: WIN_20260903_14_42_22_Pro.jpg
+    error: 1.0362712919240098
+  - file: WIN_20260903_14_42_31_Pro.jpg
+    error: 0.7454024554346084
+  - file: WIN_20260903_14_42_39_Pro.jpg
+    error: 0.6249616540518969
+  - file: WIN_20260903_14_43_14_Pro.jpg
+    error: 0.27416944278856226
+  - file: WIN_20260903_14_43_24_Pro.jpg
+    error: 0.4462849469732843
+  - file: WIN_20260903_14_44_22_Pro.jpg
+    error: 1.0658135698169786
+  - file: WIN_20260903_14_44_34_Pro.jpg
+    error: 1.2320025071361256
+  - file: WIN_20260903_14_44_42_Pro.jpg
+    error: 0.927806177167823
+  - file: WIN_20260903_14_44_54_Pro.jpg
+    error: 1.7354607071617698
+  - file: WIN_20260903_14_45_01_Pro.jpg
+    error: 1.3557768288485574
+  - file: WIN_20260903_14_45_12_Pro.jpg
+    error: 1.2454478699180085
+  - file: WIN_20260903_14_45_19_Pro.jpg
+    error: 0.851606921982604
+  - file: WIN_20260903_14_47_09_Pro.jpg
+    error: 0.9892259454359198
+  - file: WIN_20260903_14_47_16_Pro.jpg
+    error: 0.945942258234417
+  - file: WIN_20260903_14_47_23_Pro.jpg
+    error: 0.7369767223807375
