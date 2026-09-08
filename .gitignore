@@ -17,6 +17,10 @@ datasets/
 *.pth
 runs/
 
+# realtime_pose_detect.py が初回実行時に自動ダウンロードするMediaPipeの
+# Pose Landmarkerモデル(容量が大きく、再ダウンロードで復元できるため)
+*.task
+
 # ===== プライバシー・容量 =====
 # 撮影した画像・動画(自分が写り込む可能性があるものを含む)
 images/
@@ -29,3 +33,6 @@ images/
 # 実行のたびに増える計測データ(バージョン管理する意味が薄い)
 trajectories/
 shuttle_trajectory*.csv
+
+# realtime_pose_detect.py の出力(人物の立ち位置ログ。プライバシー配慮も兼ねて除外)
+person_positions/
