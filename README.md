@@ -27,6 +27,8 @@ YOLOによる物体検出とカメラキャリブレーションを組み合わ�
 | `predict_yolo.py` | 学習済みモデル(`runs/shuttlecock_baseline/weights/best.pt`)で `datasets/merged/test/images` に対して推論し、検出結果画像を `runs/predict_test/` に保存する |
 | `realtime_detect.py` | `camera_calibration.yaml` の値と学習済みモデルを使い、Webカメラ映像からシャトルコックをリアルタイム検出して距離(X, Y, Z)を推定・表示する。実行結果は `trajectories/` にCSVとして保存される |
 | `visualize_trajectory.py` | `trajectories/` 内の軌道CSVを読み込み、3D軌跡・時系列グラフ(X/Y/Z、見かけサイズ、confidence)を生成して `trajectories/plots/` に保存する。異常値(低confidence、大きな座標ジャンプ)の統計もターミナルに表示する |
+| `smooth_and_predict.py` | `trajectories/` 内の軌道CSVに対し、低confidence行・座標ジャンプ行を除外したうえで平滑化(移動平均 または Savitzky-Golay、`--method`で切替)し、放物運動(等加速度運動)モデルをX/Y/Zにフィットする。フィッティング結果(初期位置・初速度・加速度)とRMSEをターミナルに表示し、生データ・平滑化後・フィット曲線を重ねた3Dグラフを `trajectories/plots/` に、平滑化後データを `<元ファイル名>_smoothed.csv` として保存する |
+| `realtime_pose_detect.py` | MediaPipe Pose Landmarkerを使い、Webカメラ映像から人物の骨格を検出、左右足首の中点を「立ち位置」とみなす。カメラの設置高さ・俯角を仮定した簡易床面投影でX(左右)・Z(奥行き)を概算する(既知サイズが無いため厳密なZ算出はできず、MVP的な近似実装。詳細はスクリプト冒頭のコメント参照)。実行結果は `person_positions/` にCSVとして保存される |
 | `download_datasets.py` | Roboflow上のシャトルコック検出用データセット2種を `datasets/adwproj/`, `datasets/pradyumna/` にダウンロードし(`.env` の `ROBOFLOW_API_KEY` を使用)、続けて両者を `datasets/merged/` に統合する(train/valid/testごとにimages・labelsをコピーし、ファイル名の重複がないか確認、`data.yaml` を生成) |
 
 ### 設定・データファイル
@@ -46,8 +48,9 @@ YOLOによる物体検出とカメラキャリブレーションを組み合わ�
 | `datasets/` | `download_datasets.py` でダウンロードした学習用データセット(`adwproj/`, `pradyumna/`)と、それらを統合した `merged/`。容量が大きく、再取得可能なため管理しない |
 | `runs/` | `train_yolo.py` の学習結果(重み `weights/best.pt`、学習ログ `results.csv` など)や `predict_yolo.py` の推論結果画像。再実行すれば生成できるため管理しない |
 | `images/` | カメラキャリブレーション用に撮影した画像(`images/calibration/`)。撮影者が写り込む可能性があるため管理しない |
-| `trajectories/` | `realtime_detect.py` の実行結果(軌道CSV)と `visualize_trajectory.py` が生成するグラフ(`trajectories/plots/`)。実行のたびに増える計測データのため管理しない |
-| `weights/` | `*.pt` にマッチするため除外対象。現時点で `weights/yolo26n.pt` が置かれているが、現行スクリプトからは参照されていない |
+| `trajectories/` | `realtime_detect.py` の実行結果(軌道CSV)と `visualize_trajectory.py` / `smooth_and_predict.py` が生成するグラフ・平滑化後CSV(`trajectories/plots/`, `*_smoothed.csv`)。実行のたびに増える計測データのため管理しない |
+| `person_positions/` | `realtime_pose_detect.py` の実行結果(立ち位置ログCSV)。人物の動きが記録されるためプライバシー配慮も兼ねて管理しない |
+| `weights/` | `*.pt` にマッチするため除外対象。学習済みYOLOモデルに加え、`realtime_pose_detect.py` が初回実行時に自動ダウンロードするMediaPipeのPose Landmarkerモデル(`*.task`)もここに保存され、同様に除外される |
 | `__pycache__/` | Pythonの実行キャッシュ |
 
 ## 新しい環境でのセットアップ手順
@@ -153,6 +156,42 @@ python realtime_detect.py
 # 保存された軌道データを可視化する場合
 python visualize_trajectory.py
 ```
+
+### 9. 軌道の平滑化・放物運動フィッティング(任意)
+
+`realtime_detect.py` で軌道CSVを取得した後、以下でノイズ除去・物理モデルへの
+フィッティングを行えます。
+
+```bash
+python smooth_and_predict.py
+```
+
+`--method moving_average`(デフォルト)または `--method savgol`、`--window`
+(平滑化の窓サイズ)、`--confidence-threshold`、`--jump-threshold-cm` で挙動を
+調整できます。詳細はスクリプト冒頭のdocstring、または `--help` を参照してください。
+フィッティング結果(初期位置・初速度・加速度・RMSE)はターミナルに表示され、
+グラフは `trajectories/plots/smoothed_trajectory_<実行日時>_<元ファイル名>.png`
+に保存されます。
+
+### 10. 人物の立ち位置検出(任意)
+
+MediaPipe Poseを使い、Webカメラ映像から人物の骨格・立ち位置(概算)を検出できます。
+`realtime_detect.py` と同じくWindows側での実行を推奨します(WSLはUSBカメラに
+直接アクセスできないため)。
+
+```bash
+python realtime_pose_detect.py
+```
+
+初回実行時、Pose Landmarkerのモデルファイル(`weights/pose_landmarker_lite.task`、
+約6MB)が自動ダウンロードされます(要ネット接続)。`q` キーで終了し、
+`person_positions/person_position_<実行日時>.csv` に立ち位置ログが保存されます。
+
+現状、X(左右方向)は実用的な精度が出ていますが、Z(奥行き)はカメラの俯角が
+浅い条件下では小さな検出誤差が大きく増幅されるため、精度は粗い状態です
+(スクリプト冒頭のコメント、および床面投影のパラメータ `CAMERA_HEIGHT_CM` /
+`CAMERA_TILT_DEG` を参照)。体育館などの実環境での実測キャリブレーションが
+今後の課題です。
 
 ## 既知の注意点
 
