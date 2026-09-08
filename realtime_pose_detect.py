@@ -103,6 +103,14 @@ POSE_INFERENCE_INTERVAL = 2
 POSE_MIN_DETECTION_CONFIDENCE = 0.5
 POSE_MIN_TRACKING_CONFIDENCE = 0.5
 
+# 足首ランドマークをどれだけ信頼するかのしきい値。
+# 足首がフレーム外・遮蔽されている場合、visibility/presence が低いまま
+# 座標だけ外挿されて返ってくることがあり、これをそのまま立ち位置計算に
+# 使うと大きく暴れた値になる(実データで確認済み)。draw_landmarksが
+# 骨格線の描画に使っている閾値と同じ 0.5 を採用する。
+ANKLE_VISIBILITY_THRESHOLD = 0.5
+ANKLE_PRESENCE_THRESHOLD = 0.5
+
 # 立ち位置ログの出力先ディレクトリ。実行ごとに実行日時をファイル名に含めて
 # 保存し、過去の実行結果を上書きしないようにする。
 POSITION_OUTPUT_DIR = BASE_DIR / "person_positions"
@@ -505,6 +513,20 @@ def main():
                     left_ankle = last_landmarks[pose_landmark_enum.LEFT_ANKLE]
                     right_ankle = last_landmarks[pose_landmark_enum.RIGHT_ANKLE]
 
+                    # 足首がフレーム外に出ている・隠れている場合、MediaPipeは
+                    # visibility/presence が低い値のまま、正規化座標が
+                    # [0,1] の範囲外(場合によっては数倍)に外挿された値を返す
+                    # ことがある。これをそのまま使うと立ち位置が大きく暴れる
+                    # ため、両足首とも visibility/presence が閾値以上のときの
+                    # みを「信頼できる検出」として扱う
+                    # (mediapipe.tasks.python.vision.drawing_utils が骨格線の
+                    # 描画に使っているものと同じ閾値 0.5 を採用)。
+                    ankles_reliable = all(
+                        lm.visibility >= ANKLE_VISIBILITY_THRESHOLD
+                        and lm.presence >= ANKLE_PRESENCE_THRESHOLD
+                        for lm in (left_ankle, right_ankle)
+                    )
+
                     # MediaPipeのランドマークは正規化座標(0.0〜1.0)なので、
                     # 実ピクセル座標に変換する
                     left_u, left_v = left_ankle.x * w, left_ankle.y * h
@@ -514,23 +536,30 @@ def main():
                     u = (left_u + right_u) / 2.0
                     v = (left_v + right_v) / 2.0
 
-                    # 足首点を強調して描画
-                    for px, py in [(left_u, left_v), (right_u, right_v)]:
-                        cv2.circle(frame, (int(px), int(py)), 8, (0, 255, 255), -1)
-                    cv2.circle(frame, (int(u), int(v)), 10, (0, 0, 255), -1)
+                    if ankles_reliable:
+                        # 足首点を強調して描画(信頼できる場合のみ)
+                        for px, py in [(left_u, left_v), (right_u, right_v)]:
+                            cv2.circle(frame, (int(px), int(py)), 8, (0, 255, 255), -1)
+                        cv2.circle(frame, (int(u), int(v)), 10, (0, 0, 255), -1)
 
-                    # 床面投影で大まかな (X, Z) を算出(既知サイズが無いためZ算出は近似)
-                    X_cm, Z_cm, valid = estimate_floor_position(
-                        u, v, fx_use, fy_use, cx_use, cy_use
-                    )
+                        # 床面投影で大まかな (X, Z) を算出(既知サイズが無いためZ算出は近似)
+                        X_cm, Z_cm, valid = estimate_floor_position(
+                            u, v, fx_use, fy_use, cx_use, cy_use
+                        )
+                    else:
+                        valid = False
 
-                    if valid:
+                    if ankles_reliable and valid:
                         timestamp = time.time()
                         positions.append((timestamp, u, v, X_cm, Z_cm))
 
                         info_lines = [
                             f"ankle mid u,v=({u:.1f},{v:.1f})px",
                             f"standing pos (approx): X={X_cm:.1f}cm Z={Z_cm:.1f}cm",
+                        ]
+                    elif not ankles_reliable:
+                        info_lines = [
+                            "standing pos: N/A (ankle(s) not reliably visible)",
                         ]
                     else:
                         info_lines = [
