@@ -47,6 +47,7 @@ CAMERA_TILT_DEG として置いているだけなので、精度は保証され�
 """
 
 from pathlib import Path
+import argparse
 import csv
 import datetime
 import math
@@ -85,8 +86,12 @@ CAMERA_NAME_KEYWORD = "Elgato Facecam 4K"
 # (0 ... MAX_CAMERA_PROBE_INDEX-1 を試す)
 MAX_CAMERA_PROBE_INDEX = 5
 
-DESIRED_WIDTH = 3840
-DESIRED_HEIGHT = 2160
+DESIRED_WIDTH = 1280
+DESIRED_HEIGHT = 720
+# Elgato Facecam 4K の対応解像度/fps表によると、720pはコーデック問わず
+# 60fpsに対応しているため、明示的に60fpsを要求する
+# (realtime_detect.py と同じ考え方)。
+DESIRED_FPS = 60
 
 # --- 床面投影のための仮のカメラ設置パラメータ(要実測・要調整) -----------
 # カメラのレンズ中心の床からの高さ [cm]
@@ -240,7 +245,7 @@ def resolve_camera_index(name_keyword: str, max_probe_index: int) -> int:
     return prompt_user_to_select_camera(available, device_names)
 
 
-def open_camera(device_index: int, desired_width: int, desired_height: int):
+def open_camera(device_index: int, desired_width: int, desired_height: int, desired_fps: int, debug_fps: bool = False):
     """Webカメラを開き、可能なら desired_width x desired_height に設定する。
     設定できなかった場合は実際に得られた解像度をそのまま使う(フォールバック)。
 
@@ -271,8 +276,17 @@ def open_camera(device_index: int, desired_width: int, desired_height: int):
         print("カメラが接続されているか、他のアプリで使用中でないか確認してください。")
         sys.exit(1)
 
+    # MJPGを明示指定する。既定(非圧縮フォーマット)のままだと高解像度時に
+    # USB転送帯域がボトルネックになり、キャプチャ自体のfpsが大きく落ちる
+    # カメラがあるため、対応していれば圧縮フォーマットに切り替える
+    # (非対応のカメラでは無視されるだけで害はない)。
+    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, desired_width)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, desired_height)
+    cap.set(cv2.CAP_PROP_FPS, desired_fps)
+    # バッファに古いフレームが溜まって遅延が蓄積しないよう、可能な限り
+    # バッファサイズを1にする(非対応の環境では無視されるだけで害はない)。
+    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
     # 実際に設定された解像度を確認するため、1フレーム読み込む
     ok, frame = cap.read()
@@ -282,12 +296,16 @@ def open_camera(device_index: int, desired_width: int, desired_height: int):
         sys.exit(1)
 
     actual_height, actual_width = frame.shape[:2]
+    actual_fps = cap.get(cv2.CAP_PROP_FPS)
 
     if (actual_width, actual_height) != (desired_width, desired_height):
         print(
             f"[警告] カメラが希望解像度 {desired_width}x{desired_height} に対応していません。"
             f" 実際の解像度 {actual_width}x{actual_height} にフォールバックします。"
         )
+
+    fps_hint = " (--debug-fps を付けると実際のキャプチャ間隔を確認できます)" if not debug_fps else ""
+    print(f"カメラが報告するfps: {actual_fps:.1f}{fps_hint}")
 
     return cap, actual_width, actual_height
 
@@ -401,7 +419,21 @@ def ensure_pose_model(model_path: Path, model_url: str):
     print(f"ダウンロード完了: {model_path}")
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="リアルタイム人物検出・立ち位置算出スクリプト",
+    )
+    parser.add_argument(
+        "--debug-fps", action="store_true",
+        help="capture/推論の所要時間・実測fpsを実行中30フレームごとにターミナルへ表示する"
+             "(ボトルネック調査用。通常運用では不要)",
+    )
+    return parser.parse_args()
+
+
 def main():
+    args = parse_args()
+
     # ---- MediaPipe読み込み -------------------------------------------------
     # 現行バージョンのMediaPipeでは旧来の `mediapipe.solutions.pose` API は
     # 廃止されており、Tasks API (`mediapipe.tasks.python.vision`) を使う。
@@ -431,7 +463,7 @@ def main():
     # ---- カメラ起動 -------------------------------------------------------
     camera_index = resolve_camera_index(CAMERA_NAME_KEYWORD, MAX_CAMERA_PROBE_INDEX)
     cap, actual_width, actual_height = open_camera(
-        camera_index, DESIRED_WIDTH, DESIRED_HEIGHT
+        camera_index, DESIRED_WIDTH, DESIRED_HEIGHT, DESIRED_FPS, debug_fps=args.debug_fps
     )
 
     # フォールバックが発生した場合、キャリブレーション時の解像度からの比率で
@@ -452,7 +484,8 @@ def main():
         fx_use, fy_use, cx_use, cy_use = fx, fy, cx, cy
 
     print(f"カメラ解像度: {actual_width}x{actual_height}")
-    print("'q' キーで終了します。")
+    print("'q'(または Esc)キーで終了します。"
+          "反応しない場合は映像ウィンドウをクリックしてフォーカスしてから押してください。")
 
     positions = []  # [(timestamp, u, v, X_cm, Z_cm), ...]
 
@@ -463,6 +496,10 @@ def main():
     frame_count = 0
     # 間引き推論時、推論しなかったフレームでも直近の検出結果を描画し続けるために保持する
     last_landmarks = None
+
+    # fps計測用(直近30フレームの平均をターミナルに表示する。--debug-fps時のみ)
+    timing_window = []
+    TIMING_WINDOW_SIZE = 30
 
     # Tasks APIのPoseLandmarkerを作成する。RunningMode.VIDEOは、
     # 単調増加するタイムスタンプ(ミリ秒)を渡して1フレームずつ同期的に
@@ -480,7 +517,9 @@ def main():
         try:
             start_time = time.monotonic()
             while True:
+                t_capture_start = time.time() if args.debug_fps else None
                 ok, frame = cap.read()
+                t_capture_end = time.time() if args.debug_fps else None
                 if not ok or frame is None:
                     print("[警告] フレームを取得できませんでした。終了します。")
                     break
@@ -491,6 +530,7 @@ def main():
                 # 処理負荷軽減のため、POSE_INFERENCE_INTERVAL フレームに1回だけ推論する
                 run_inference = (frame_count % POSE_INFERENCE_INTERVAL == 0)
 
+                t_infer_start = time.time() if (args.debug_fps and run_inference) else None
                 if run_inference:
                     # MediaPipeはRGB画像を期待するため変換する
                     rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -500,6 +540,21 @@ def main():
                     result = landmarker.detect_for_video(mp_image, timestamp_ms)
                     # 複数人検出時も先頭(=最も信頼度の高い)1人分だけを使う
                     last_landmarks = result.pose_landmarks[0] if result.pose_landmarks else None
+                t_infer_end = time.time() if (args.debug_fps and run_inference) else None
+
+                if args.debug_fps:
+                    infer_time = (t_infer_end - t_infer_start) if run_inference else 0.0
+                    timing_window.append((t_capture_end - t_capture_start, infer_time))
+                    if len(timing_window) >= TIMING_WINDOW_SIZE:
+                        capture_avg = sum(c for c, _ in timing_window) / len(timing_window)
+                        infer_avg = sum(i for _, i in timing_window) / len(timing_window)
+                        total_avg = capture_avg + infer_avg
+                        print(
+                            f"[fps計測] capture={capture_avg*1000:.1f}ms "
+                            f"infer(間引き込み平均)={infer_avg*1000:.1f}ms "
+                            f"合計={total_avg*1000:.1f}ms (~{1.0/total_avg:.1f}fps)"
+                        )
+                        timing_window.clear()
 
                 if last_landmarks is not None:
                     # 骨格全体を描画
@@ -576,14 +631,23 @@ def main():
                 cv2.imshow(WINDOW_NAME, frame)
 
                 key = cv2.waitKey(1) & 0xFF
-                if key == ord("q"):
-                    print("'q' が押されたため終了します。")
+                # Caps Lock等で大文字 'Q' になる場合や、キー配列の都合で 'q' が
+                # 押しづらい場合に備え、Esc キーでも終了できるようにする。
+                # (waitKeyはウィンドウがアクティブ(フォーカスされている)でないと
+                #  キー入力を拾えないので、反応しない場合はまず映像ウィンドウを
+                #  クリックしてからキーを押すこと。)
+                if key in (ord("q"), ord("Q"), 27):  # 27 = Esc
+                    print("終了キーが押されたため終了します。")
                     break
 
                 # ウィンドウが閉じられた場合も終了する
                 if cv2.getWindowProperty(WINDOW_NAME, cv2.WND_PROP_VISIBLE) < 1:
                     break
 
+        except KeyboardInterrupt:
+            # Ctrl+Cで終了した場合、汚いtracebackを出さずに終了する
+            # (finallyブロックでのcap.release()・CSV保存は変わらず実行される)。
+            print("\n[情報] Ctrl+Cが押されたため終了します。")
         finally:
             cap.release()
             cv2.destroyAllWindows()

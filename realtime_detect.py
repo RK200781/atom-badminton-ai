@@ -15,9 +15,11 @@ trajectories/shuttle_trajectory_<実行日時>.csv として出力する
 """
 
 from pathlib import Path
+import argparse
 import csv
 import datetime
 import sys
+import tempfile
 import time
 
 import platform
@@ -42,8 +44,11 @@ CAMERA_NAME_KEYWORD = "Elgato Facecam 4K"
 # (0 ... MAX_CAMERA_PROBE_INDEX-1 を試す)
 MAX_CAMERA_PROBE_INDEX = 5
 
-DESIRED_WIDTH = 3840
-DESIRED_HEIGHT = 2160
+DESIRED_WIDTH = 1280
+DESIRED_HEIGHT = 720
+# Elgato Facecam 4K の対応解像度/fps表によると、720pはコーデック問わず
+# 60fpsに対応しているため、明示的に60fpsを要求する。
+DESIRED_FPS = 60
 
 # シャトルコックの実サイズ(直径, cm)。後で調整しやすいよう定数化。
 SHUTTLE_DIAMETER_CM = 6.35
@@ -53,6 +58,12 @@ CONFIDENCE_THRESHOLD = 0.25  # YOLO推論時の信頼度しきい値
 # 軌道CSVの出力先ディレクトリ。実行ごとに実行日時をファイル名に含めて保存し、
 # 過去の実行結果を上書きしないようにする。
 TRAJECTORY_OUTPUT_DIR = BASE_DIR / "trajectories"
+
+# YOLOのPredictorが内部的に作る保存先ディレクトリ(未使用でも初期化時に
+# パス解決される)。BASE_DIR配下(\\wsl.localhost\... のネットワークパス)を
+# 使うと、resolve()がネットワーク越しになり毎フレーム遅延・フリーズの
+# 原因になることがあるため、Windowsローカルの一時フォルダに固定する。
+YOLO_SCRATCH_DIR = Path(tempfile.gettempdir()) / "atom_badminton_yolo_runs"
 
 # 表示ウィンドウの名前。namedWindow / imshow / getWindowProperty で必ずこの
 # 定数だけを使う(別名を渡すと別ウィンドウとして生成されてしまうため)。
@@ -197,7 +208,7 @@ def resolve_camera_index(name_keyword: str, max_probe_index: int) -> int:
     return prompt_user_to_select_camera(available, device_names)
 
 
-def open_camera(device_index: int, desired_width: int, desired_height: int):
+def open_camera(device_index: int, desired_width: int, desired_height: int, desired_fps: int, debug_fps: bool = False):
     """Webカメラを開き、可能なら desired_width x desired_height に設定する。
     設定できなかった場合は実際に得られた解像度をそのまま使う(フォールバック)。
 
@@ -228,8 +239,17 @@ def open_camera(device_index: int, desired_width: int, desired_height: int):
         print("カメラが接続されているか、他のアプリで使用中でないか確認してください。")
         sys.exit(1)
 
+    # MJPGを明示指定する。既定(非圧縮フォーマット)のままだと高解像度時に
+    # USB転送帯域がボトルネックになり、キャプチャ自体のfpsが大きく落ちる
+    # カメラがあるため、対応していれば圧縮フォーマットに切り替える
+    # (非対応のカメラでは無視されるだけで害はない)。
+    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, desired_width)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, desired_height)
+    cap.set(cv2.CAP_PROP_FPS, desired_fps)
+    # バッファに古いフレームが溜まって遅延が蓄積しないよう、可能な限り
+    # バッファサイズを1にする(非対応の環境では無視されるだけで害はない)。
+    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
     # 実際に設定された解像度を確認するため、1フレーム読み込む
     ok, frame = cap.read()
@@ -239,6 +259,7 @@ def open_camera(device_index: int, desired_width: int, desired_height: int):
         sys.exit(1)
 
     actual_height, actual_width = frame.shape[:2]
+    actual_fps = cap.get(cv2.CAP_PROP_FPS)
 
     if (actual_width, actual_height) != (desired_width, desired_height):
         print(
@@ -246,10 +267,27 @@ def open_camera(device_index: int, desired_width: int, desired_height: int):
             f" 実際の解像度 {actual_width}x{actual_height} にフォールバックします。"
         )
 
+    fps_hint = " (--debug-fps を付けると実際のキャプチャ間隔を確認できます)" if not debug_fps else ""
+    print(f"カメラが報告するfps: {actual_fps:.1f}{fps_hint}")
+
     return cap, actual_width, actual_height
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="リアルタイムシャトルコック検出・距離推定スクリプト",
+    )
+    parser.add_argument(
+        "--debug-fps", action="store_true",
+        help="capture/推論の所要時間・実測fpsを実行中30フレームごとにターミナルへ表示する"
+             "(ボトルネック調査用。通常運用では不要)",
+    )
+    return parser.parse_args()
+
+
 def main():
+    args = parse_args()
+
     # ---- キャリブレーション読み込み ------------------------------------
     fx, fy, cx, cy, calib_width, calib_height = load_calibration(CALIBRATION_YAML)
     print(f"キャリブレーション値を読み込みました (解像度 {calib_width}x{calib_height}):")
@@ -271,10 +309,22 @@ def main():
     print(f"モデルを読み込み中: {MODEL_PATH}")
     model = YOLO(str(MODEL_PATH))
 
+    try:
+        import torch
+        use_cuda = torch.cuda.is_available()
+    except ImportError:
+        use_cuda = False
+
+    if use_cuda:
+        model.to("cuda")
+        print(f"GPU推論を使用します: {torch.cuda.get_device_name(0)}")
+    else:
+        print("[情報] CUDAが利用できないため、CPUで推論します(fpsが低くなる場合があります)。")
+
     # ---- カメラ起動 -------------------------------------------------------
     camera_index = resolve_camera_index(CAMERA_NAME_KEYWORD, MAX_CAMERA_PROBE_INDEX)
     cap, actual_width, actual_height = open_camera(
-        camera_index, DESIRED_WIDTH, DESIRED_HEIGHT
+        camera_index, DESIRED_WIDTH, DESIRED_HEIGHT, DESIRED_FPS, debug_fps=args.debug_fps
     )
 
     # フォールバックが発生した場合、キャリブレーション時の解像度からの比率で
@@ -295,7 +345,8 @@ def main():
         fx_use, fy_use, cx_use, cy_use = fx, fy, cx, cy
 
     print(f"カメラ解像度: {actual_width}x{actual_height}")
-    print("'q' キーで終了します。")
+    print("'q'(または Esc)キーで終了します。"
+          "反応しない場合は映像ウィンドウをクリックしてフォーカスしてから押してください。")
 
     trajectory = []  # [(timestamp, X, Y, Z, u, v, w, h, confidence), ...]
 
@@ -303,20 +354,51 @@ def main():
     # このウィンドウに対して imshow するだけで、新規ウィンドウは作られない。
     cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
 
+    # fps計測用(直近30フレームの平均をターミナルに表示する)
+    frame_count = 0
+    timing_window = []
+    TIMING_WINDOW_SIZE = 30
+
     try:
         while True:
+            t_capture_start = time.time() if args.debug_fps else None
             ok, frame = cap.read()
+            t_capture_end = time.time() if args.debug_fps else None
             if not ok or frame is None:
                 print("[警告] フレームを取得できませんでした。終了します。")
                 break
 
             # 推論(リアルタイム性優先: verbose抑制、必要最低限の後処理)
+            t_infer_start = time.time() if args.debug_fps else None
             results = model.predict(
                 frame,
                 conf=CONFIDENCE_THRESHOLD,
                 verbose=False,
+                device=0 if use_cuda else "cpu",
+                # save_dirの解決がネットワークパス越しにならないよう、
+                # ローカルの一時フォルダを明示指定する(実際には保存しない)。
+                project=str(YOLO_SCRATCH_DIR),
+                name="realtime",
+                exist_ok=True,
             )
+            t_infer_end = time.time() if args.debug_fps else None
             result = results[0]
+
+            if args.debug_fps:
+                frame_count += 1
+                timing_window.append(
+                    (t_capture_end - t_capture_start, t_infer_end - t_infer_start)
+                )
+            if args.debug_fps and len(timing_window) >= TIMING_WINDOW_SIZE:
+                capture_avg = sum(c for c, _ in timing_window) / len(timing_window)
+                infer_avg = sum(i for _, i in timing_window) / len(timing_window)
+                total_avg = capture_avg + infer_avg
+                print(
+                    f"[fps計測] capture={capture_avg*1000:.1f}ms "
+                    f"infer={infer_avg*1000:.1f}ms "
+                    f"合計={total_avg*1000:.1f}ms (~{1.0/total_avg:.1f}fps)"
+                )
+                timing_window.clear()
 
             best_box = None
             best_conf = -1.0
@@ -386,14 +468,23 @@ def main():
             cv2.imshow(WINDOW_NAME, frame)
 
             key = cv2.waitKey(1) & 0xFF
-            if key == ord("q"):
-                print("'q' が押されたため終了します。")
+            # Caps Lock等で大文字 'Q' になる場合や、キー配列の都合で 'q' が
+            # 押しづらい場合に備え、Esc キーでも終了できるようにする。
+            # (waitKeyはウィンドウがアクティブ(フォーカスされている)でないと
+            #  キー入力を拾えないので、反応しない場合はまず映像ウィンドウを
+            #  クリックしてからキーを押すこと。)
+            if key in (ord("q"), ord("Q"), 27):  # 27 = Esc
+                print("終了キーが押されたため終了します。")
                 break
 
             # ウィンドウが閉じられた場合も終了する
             if cv2.getWindowProperty(WINDOW_NAME, cv2.WND_PROP_VISIBLE) < 1:
                 break
 
+    except KeyboardInterrupt:
+        # Ctrl+Cで終了した場合、汚いtracebackを出さずに終了する
+        # (finallyブロックでのcap.release()・CSV保存は変わらず実行される)。
+        print("\n[情報] Ctrl+Cが押されたため終了します。")
     finally:
         cap.release()
         cv2.destroyAllWindows()
