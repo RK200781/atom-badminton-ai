@@ -5,7 +5,9 @@ from ultralytics import YOLO
 BASE_DIR = Path(__file__).resolve().parent
 
 # 学習済みモデルを読み込む
-model = YOLO(BASE_DIR / "runs/shuttlecock_baseline/weights/best.pt")
+# shuttlecock_v2: adwproj + pradyumna + 自前撮影データ(experiment)を統合した
+# datasets/merged で学習したモデル。baselineより精度が向上しているため主軸として使う。
+model = YOLO(BASE_DIR / "runs/shuttlecock_v2/weights/best.pt")
 
 # project は絶対パスで指定する。
 # ultralytics は project が相対パスだと settings.json の runs_dir(既に .../runs) の

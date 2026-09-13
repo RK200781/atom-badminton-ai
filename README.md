@@ -23,13 +23,13 @@ YOLOによる物体検出とカメラキャリブレーションを組み合わ�
 | ファイル | 説明 |
 |---|---|
 | `calibrate_camera.py` | `images/calibration/` 内のチェッカーボード画像(内部コーナー9x6、1マス25mm)からカメラキャリブレーションを行い、カメラ行列(fx, fy, cx, cy)・歪み係数・再投影誤差を算出して `camera_calibration.yaml` に保存する |
-| `train_yolo.py` | 事前学習済みの `yolov8n.pt` を読み込み、`datasets/merged/data.yaml` を使ってシャトルコック検出モデルを転移学習する(GPU使用、50エポック)。結果は `runs/shuttlecock_baseline/` に保存される |
-| `predict_yolo.py` | 学習済みモデル(`runs/shuttlecock_baseline/weights/best.pt`)で `datasets/merged/test/images` に対して推論し、検出結果画像を `runs/predict_test/` に保存する |
+| `train_yolo.py` | 事前学習済みの `yolov8n.pt` を読み込み、`datasets/merged/data.yaml` を使ってシャトルコック検出モデルを転移学習する(GPU使用、`--epochs`で指定可能・デフォルト50)。結果は `runs/<--nameで指定した名前>/`(デフォルト `shuttlecock_v2`)に保存される |
+| `predict_yolo.py` | 学習済みモデル(`runs/shuttlecock_v2/weights/best.pt`)で `datasets/merged/test/images` に対して推論し、検出結果画像を `runs/predict_test/` に保存する |
 | `realtime_detect.py` | `camera_calibration.yaml` の値と学習済みモデルを使い、Webカメラ映像からシャトルコックをリアルタイム検出して距離(X, Y, Z)を推定・表示する。実行結果は `trajectories/` にCSVとして保存される |
 | `visualize_trajectory.py` | `trajectories/` 内の軌道CSVを読み込み、3D軌跡・時系列グラフ(X/Y/Z、見かけサイズ、confidence)を生成して `trajectories/plots/` に保存する。異常値(低confidence、大きな座標ジャンプ)の統計もターミナルに表示する |
 | `smooth_and_predict.py` | `trajectories/` 内の軌道CSVに対し、低confidence行・座標ジャンプ行を除外したうえで平滑化(移動平均 または Savitzky-Golay、`--method`で切替)し、放物運動(等加速度運動)モデルをX/Y/Zにフィットする。フィッティング結果(初期位置・初速度・加速度)とRMSEをターミナルに表示し、生データ・平滑化後・フィット曲線を重ねた3Dグラフを `trajectories/plots/` に、平滑化後データを `<元ファイル名>_smoothed.csv` として保存する |
 | `realtime_pose_detect.py` | MediaPipe Pose Landmarkerを使い、Webカメラ映像から人物の骨格を検出、左右足首の中点を「立ち位置」とみなす。カメラの設置高さ・俯角を仮定した簡易床面投影でX(左右)・Z(奥行き)を概算する(既知サイズが無いため厳密なZ算出はできず、MVP的な近似実装。詳細はスクリプト冒頭のコメント参照)。実行結果は `person_positions/` にCSVとして保存される |
-| `download_datasets.py` | Roboflow上のシャトルコック検出用データセット2種を `datasets/adwproj/`, `datasets/pradyumna/` にダウンロードし(`.env` の `ROBOFLOW_API_KEY` を使用)、続けて両者を `datasets/merged/` に統合する(train/valid/testごとにimages・labelsをコピーし、ファイル名の重複がないか確認、`data.yaml` を生成) |
+| `download_datasets.py` | Roboflow上のシャトルコック検出用データセット2種を `datasets/adwproj/`, `datasets/pradyumna/` にダウンロードし(`.env` の `ROBOFLOW_API_KEY` を使用)、続けて自前撮影・アノテーション済みデータセット `datasets/experiment/`(存在する場合。手動で配置。スクリプト冒頭のコメント参照)も含めて `datasets/merged/` に統合する(train/valid/testごとにimages・labelsをコピーし、ファイル名の重複がないか確認、`data.yaml` を生成) |
 
 ### 設定・データファイル
 
@@ -45,7 +45,7 @@ YOLOによる物体検出とカメラキャリブレーションを組み合わ�
 | フォルダ | 内容 |
 |---|---|
 | `venv/`, `venv_win/` | Python仮想環境(それぞれLinux/WSL用、Windows用)。`requirements.txt` から再構築できるため管理しない |
-| `datasets/` | `download_datasets.py` でダウンロードした学習用データセット(`adwproj/`, `pradyumna/`)と、それらを統合した `merged/`。容量が大きく、再取得可能なため管理しない |
+| `datasets/` | `download_datasets.py` でダウンロードした学習用データセット(`adwproj/`, `pradyumna/`)、自前撮影・アノテーション済みデータセット(`experiment/`)、それらを統合した `merged/`。容量が大きく、再取得可能なため管理しない |
 | `runs/` | `train_yolo.py` の学習結果(重み `weights/best.pt`、学習ログ `results.csv` など)や `predict_yolo.py` の推論結果画像。再実行すれば生成できるため管理しない |
 | `images/` | カメラキャリブレーション用に撮影した画像(`images/calibration/`)。撮影者が写り込む可能性があるため管理しない |
 | `trajectories/` | `realtime_detect.py` の実行結果(軌道CSV)と `visualize_trajectory.py` / `smooth_and_predict.py` が生成するグラフ・平滑化後CSV(`trajectories/plots/`, `*_smoothed.csv`)。実行のたびに増える計測データのため管理しない |
@@ -103,26 +103,36 @@ python download_datasets.py
 `datasets/merged/`(`train_yolo.py` / `predict_yolo.py` が参照する統合データセット)が
 自動的に作成されます。統合処理はスクリプト内で以下を行います。
 
-- train/valid/testそれぞれについて、2つのデータセットのimages・labelsを
-  `datasets/merged/<split>/images`, `labels` にコピー
+- train/valid/testそれぞれについて、`adwproj`・`pradyumna`(・存在すれば自前撮影データ
+  `datasets/experiment/`)のimages・labelsを `datasets/merged/<split>/images`, `labels`
+  にコピー
 - コピー時にファイル名の重複がないか確認し、重複があれば警告してスキップ
 - `datasets/merged/data.yaml`(`nc: 1`, `names: ['shuttlecock']`)を生成
 
 再実行するたびに `datasets/merged/` は作り直されるため、常にダウンロード済みの
-最新データセットの内容と一致します。
+最新データセットの内容と一致します。`datasets/experiment/` は自前撮影・アノテーション
+済みのデータセットで、Roboflowからの再ダウンロードはこのスクリプトでは行わない
+(スクリプト冒頭のコメント参照。手動で配置しておく)。
 
 ### 6. モデルの学習(または学習済みモデルの共有)
 
 GPU環境がある場合は、自分で学習できます。
 
 ```bash
-python train_yolo.py
+python train_yolo.py --name shuttlecock_v2
 ```
 
-学習結果は `runs/shuttlecock_baseline/weights/best.pt` に保存されます。
+`--name`(デフォルト: `shuttlecock_v2`)で `runs/<name>/` に保存先を指定できる。
+既存の学習結果を上書きしないよう、再学習のたびに別名を指定すること。
+`--epochs`(デフォルト50)でエポック数も指定可能。
+
+学習結果は `runs/shuttlecock_v2/weights/best.pt` に保存されます。**現在このモデルを
+主軸として使用しています**(adwproj + pradyumna + 自前撮影データで学習、旧
+`shuttlecock_baseline` よりPrecision/Recall/mAP50が向上)。`realtime_detect.py` /
+`predict_yolo.py` はデフォルトでこのパスを参照します。
 
 GPU環境がない、またはすぐに `realtime_detect.py` を試したい場合は、チームメンバーから
-学習済みの `best.pt` を共有してもらい、同じパス `runs/shuttlecock_baseline/weights/best.pt`
+学習済みの `best.pt` を共有してもらい、同じパス `runs/shuttlecock_v2/weights/best.pt`
 に配置してください。
 
 ### 7. カメラキャリブレーション

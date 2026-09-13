@@ -33,9 +33,10 @@ BASE_DIR = Path(__file__).resolve().parent
 
 CALIBRATION_YAML = BASE_DIR / "camera_calibration.yaml"
 # 学習済みモデルの重み
-# (依頼文中のパス runs/detect/runs/shuttlecock_baseline/weights/best.pt は
-#  実際には存在しなかったため、実在するパスに変更しています)
-MODEL_PATH = BASE_DIR / "runs" / "shuttlecock_baseline" / "weights" / "best.pt"
+# shuttlecock_v2: adwproj + pradyumna + 自前撮影データ(experiment)を
+# 統合した datasets/merged で学習したモデル。baseline(adwproj+pradyumnaのみ)
+# より Precision/Recall/mAP50 が向上しているため、こちらを主軸として使う。
+MODEL_PATH = BASE_DIR / "runs" / "shuttlecock_v2" / "weights" / "best.pt"
 
 # 自動検出したい、あるいは接続を確認したいカメラの名前(部分一致・大文字小文字無視)。
 CAMERA_NAME_KEYWORD = "Elgato Facecam 4K"

@@ -9,6 +9,20 @@ BASE_DIR = Path(__file__).resolve().parent
 DATASETS_DIR = BASE_DIR / "datasets"
 MERGED_DIR = DATASETS_DIR / "merged"
 
+# 自前撮影・アノテーション済みのデータセット(Roboflowプロジェクト
+# "-kz8ad/atom-badminton-ai")。APIキー付きの個人エクスポートリンクを
+# ここに埋め込むのは望ましくないため、再ダウンロードはこのスクリプトでは
+# 行わず、あらかじめ以下の手順で手動配置しておいたものをそのまま使う。
+#
+#   mkdir -p datasets/experiment
+#   cd datasets/experiment
+#   curl -L "https://app.roboflow.com/ds/<エクスポートID>?key=<キー>" -o roboflow.zip
+#   unzip roboflow.zip && rm roboflow.zip
+#   cd ../..
+#
+# 存在しない場合は警告を出し、adwproj・pradyumnaの2つだけで統合を続行する。
+EXPERIMENT_DIR = DATASETS_DIR / "experiment"
+
 SPLITS = ["train", "valid", "test"]
 
 # train_yolo.py / predict_yolo.py が参照する datasets/merged/data.yaml の内容
@@ -39,7 +53,20 @@ def download_datasets():
 
     print("ダウンロード完了")
 
-    return [DATASETS_DIR / "adwproj", DATASETS_DIR / "pradyumna"]
+    source_dirs = [DATASETS_DIR / "adwproj", DATASETS_DIR / "pradyumna"]
+
+    # 自前撮影データセットは既にダウンロード済みの前提。存在すれば統合対象に
+    # 加え、無ければ警告のみ表示して2データセットのままにする。
+    if EXPERIMENT_DIR.exists():
+        print(f"自前撮影データセットを検出しました: {EXPERIMENT_DIR}")
+        source_dirs.append(EXPERIMENT_DIR)
+    else:
+        print(
+            f"[警告] {EXPERIMENT_DIR} が見つかりません。"
+            "自前撮影データセットは統合されません(スクリプト冒頭のコメント参照)。"
+        )
+
+    return source_dirs
 
 
 def merge_datasets(source_dirs):
