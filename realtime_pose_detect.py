@@ -379,9 +379,11 @@ def estimate_floor_position(u, v, fx, fy, cx, cy,
     cos_t, sin_t = math.cos(tilt_rad), math.sin(tilt_rad)
 
     x_world = ray_camera[0]
-    # カメラ座標系の下向きYと前向きZを、下向き俯角分だけ回転してワールド系へ
-    y_world = -(ray_camera[1] * cos_t - ray_camera[2] * sin_t)  # 上向きを正にするため符号反転
-    z_world = ray_camera[1] * sin_t + ray_camera[2] * cos_t
+    # カメラを下向きに傾けると、光軸(カメラの+Z)はワールドで (0, -sin, cos)
+    # (下・前方)、画像の下方向(カメラの+Y)は (0, -cos, -sin)(下・後方)を向く。
+    # 視線ベクトルはこの2つの重ね合わせ(ワールドYは上向きが正)。
+    y_world = -(ray_camera[1] * cos_t + ray_camera[2] * sin_t)
+    z_world = -ray_camera[1] * sin_t + ray_camera[2] * cos_t
 
     # 視線が水平より上(y_world >= 0)を向いている場合、床(y=-camera_height_cm)
     # とは交わらない
