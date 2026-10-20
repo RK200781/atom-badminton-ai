@@ -29,7 +29,9 @@ YOLOによる物体検出とカメラキャリブレーションを組み合わ�
 | `trajectory_predictor.py` | リアルタイム軌道予測ロジック。直近0.5秒の検出点に等加速度運動モデルをフィットし直して未来の位置・落下時刻を予測する(`realtime_detect.py` から利用)。単体で実行すると `trajectories/` の記録済みCSVを再生して予測精度(静止仮定との比較)を評価する |
 | `visualize_trajectory.py` | `trajectories/` 内の軌道CSVを読み込み、3D軌跡・時系列グラフ(X/Y/Z、見かけサイズ、confidence)を生成して `trajectories/plots/` に保存する。異常値(低confidence、大きな座標ジャンプ)の統計もターミナルに表示する |
 | `smooth_and_predict.py` | `trajectories/` 内の軌道CSVに対し、低confidence行・座標ジャンプ行を除外したうえで平滑化(移動平均 または Savitzky-Golay、`--method`で切替)し、放物運動(等加速度運動)モデルをX/Y/Zにフィットする。フィッティング結果(初期位置・初速度・加速度)とRMSEをターミナルに表示し、生データ・平滑化後・フィット曲線を重ねた3Dグラフを `trajectories/plots/` に、平滑化後データを `<元ファイル名>_smoothed.csv` として保存する |
-| `realtime_pose_detect.py` | MediaPipe Pose Landmarkerを使い、Webカメラ映像から人物の骨格を検出、左右足首の中点を「立ち位置」とみなす。カメラの設置高さ・俯角を仮定した簡易床面投影でX(左右)・Z(奥行き)を概算する(既知サイズが無いため厳密なZ算出はできず、MVP的な近似実装。詳細はスクリプト冒頭のコメント参照)。実行結果は `person_positions/` にCSVとして保存される |
+| `realtime_pose_detect.py` | MediaPipe Pose Landmarkerを使い、Webカメラ映像から人物の骨格を検出、左右足首の中点を「立ち位置」とみなす。カメラの設置高さ・俯角を仮定した簡易床面投影でX(左右)・Z(奥行き)を概算する(既知サイズが無いため厳密なZ算出はできず、MVP的な近似実装。詳細はスクリプト冒頭のコメント参照)。実行結果は `person_positions/` にCSVとして保存される。立ち位置は `launch_control/` の発射判断にも渡される(`--no-launch-control` で無効化) |
+| `launch_control/` | シャトル発射機の「判断と行動」部分(ダミー版、標準ライブラリ中心)。`config.py`(設定値・仰角→距離の対応表)、`aiming.py`(座標変換・パン/チルト角の計算)、`launcher.py`(ハードウェアの抽象化、`MockLauncher` / 未実装の `AK45Launcher`)、`fire_controller.py`(発射判断の状態機械と `shots.csv` への記録)、`overlay.py`(映像への状態表示)、`demo_sim.py`(カメラなしのシミュレーション)。詳細は下記「11. 発射機の判断(ダミー版)」 |
+| `tests/` | 単体テスト(`python -m unittest discover -s tests`) |
 | `download_datasets.py` | Roboflow上のシャトルコック検出用データセット2種を `datasets/adwproj/`, `datasets/pradyumna/` にダウンロードし(`.env` の `ROBOFLOW_API_KEY` を使用)、続けて自前撮影・アノテーション済みデータセット `datasets/experiment/`(存在する場合。手動で配置。スクリプト冒頭のコメント参照)も含めて `datasets/merged/` に統合する(train/valid/testごとにimages・labelsをコピーし、ファイル名の重複がないか確認、`data.yaml` を生成) |
 
 ### 設定・データファイル
@@ -51,6 +53,7 @@ YOLOによる物体検出とカメラキャリブレーションを組み合わ�
 | `images/` | カメラキャリブレーション用に撮影した画像(`images/calibration/`)。撮影者が写り込む可能性があるため管理しない |
 | `trajectories/` | `realtime_detect.py` の実行結果(軌道CSV、予測CSV `trajectories/predictions/`)と `visualize_trajectory.py` / `smooth_and_predict.py` が生成するグラフ・平滑化後CSV(`trajectories/plots/`, `*_smoothed.csv`)。実行のたびに増える計測データのため管理しない |
 | `person_positions/` | `realtime_pose_detect.py` の実行結果(立ち位置ログCSV)。人物の動きが記録されるためプライバシー配慮も兼ねて管理しない |
+| `shots/` | 発射ごとの記録 `shots.csv`。人の立ち位置を含むため、`person_positions/` と同じ理由で管理しない |
 | `weights/` | `*.pt` にマッチするため除外対象。学習済みYOLOモデルに加え、`realtime_pose_detect.py` が初回実行時に自動ダウンロードするMediaPipeのPose Landmarkerモデル(`*.task`)もここに保存され、同様に除外される |
 | `__pycache__/` | Pythonの実行キャッシュ |
 
@@ -220,6 +223,47 @@ python realtime_pose_detect.py
 `CAMERA_TILT_DEG` を参照)。体育館などの実環境での実測キャリブレーションが
 今後の課題です。
 
+なお、2026-10-20 以前の `estimate_floor_position()` は俯角の回転の向きが逆で
+(下向き15°のつもりが上向き15°として計算されていた)、Zが数十〜百数十mになる
+ことがありました。それ以前に保存した `person_positions/` のZは信用しないでください。
+
+### 11. 発射機の判断(ダミー版)
+
+`realtime_pose_detect.py` を実行すると、立ち位置をもとに発射機の判断を行います。
+実機の代わりに `MockLauncher` が一定の角速度で動く様子を模擬し、状態・角度・
+メッセージが映像の左下に、発射時は中央に大きく `FIRE!` が表示されます。
+
+判断の流れ(`launch_control/fire_controller.py`):
+
+1. **IDLE**:人が見えるのを待つ
+2. **TRACKING**:直近1秒の立ち位置が、中央値から30cm以内に収まるまで待つ。
+   遠すぎる・近すぎる・首振り範囲外の場合はメッセージを出して撃たない
+3. **AIMING**:パン・チルト角を指令し、到達(±1°)を待つ。途中で人が40cm以上
+   動いたら TRACKING に戻って狙い直す。3秒で到達しなければやり直す
+4. **FIRING**:開閉部を0.5秒開ける。`shots/shots.csv` に記録する
+5. **COOLDOWN**:3秒待ってから TRACKING に戻る
+
+1秒以上見失うと IDLE に戻ります。静止判定と発射は、**そのフレームで人が
+見えている時だけ**行います(人が消えた直後に、誰もいない所へ撃たないため)。
+数フレームの見失いならそのまま続行します。
+
+カメラなしで流れを確認する場合(WSL可):
+
+```bash
+python -m launch_control.demo_sim          # 人が右前方→左へ移動→遠く→いなくなる、を模擬
+python -m unittest discover -s tests       # 単体テスト
+```
+
+#### 後で実機に合わせて差し替えるもの
+
+| 対象 | 場所 | 内容 |
+|---|---|---|
+| 仰角→距離の対応表 | `launch_control/config.py` の `TILT_TO_DISTANCE_TABLE` | 現在は仮値。試射の実測値に置き換える。「距離」は、シャトルが打点の高さ `HIT_HEIGHT_CM`(初期値150cm)を**下降中に**通過する地点の水平距離と定義している。`HIT_HEIGHT_CM = 0` で実測した表を入れれば、床の着地点の表として使える。最大距離までの単調増加部分(低い弾道)だけを使う |
+| カメラの取り付け位置 | `launch_control/config.py` の `CAMERA_MOUNT` | 発射機のパン軸から見たカメラの位置(`offset_x_cm`, `offset_z_cm`)と向き(`yaw_deg`)。現在はすべて0 |
+| カメラの高さ・俯角 | `realtime_pose_detect.py` の `CAMERA_HEIGHT_CM` / `CAMERA_TILT_DEG` | 立ち位置の床面投影に使う。現在は仮値(150cm, 15°) |
+| 実機ドライバ | `launch_control/launcher.py` の `AK45Launcher` | 現在は骨組みのみ。CAN ID、制御モード、角度の符号とゼロ点、開閉部の制御方法をTODOコメントに列挙している。どのメソッドもブロックせずにすぐ返すこと |
+| 着地点の記録 | `shots/shots.csv` の `landing_x_cm`, `landing_z_cm` | 現在は空欄。試射時に軌道CSV(`timestamp` で突き合わせ)などから床の着地点・打点の高さの通過位置を埋め、対応表の補正に使う |
+
 ## 今後の課題(保留中)
 
 - **カメラ設置位置の実測と床面投影パラメータの調整**:実機の組み立て時に、カメラの
@@ -237,7 +281,9 @@ python realtime_pose_detect.py
   向かない)。
 - **シャトル検出と人物検出の統合**:テストのしやすさを優先し、現状は
   `realtime_detect.py` と `realtime_pose_detect.py` を別スクリプトのままにしている。
-- **シャトル発射機との連携**:仕様が固まっていないため保留中。
+- **シャトル発射機との連携**:判断ロジックはダミー版(`launch_control/`)まで実装済み。
+  モーター(CubeMars AK45-10 ×2)と開閉部の制御方法が確認でき次第、`AK45Launcher`
+  を実装する。
 
 ## 既知の注意点
 

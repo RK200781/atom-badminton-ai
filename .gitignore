@@ -36,3 +36,6 @@ shuttle_trajectory*.csv
 
 # realtime_pose_detect.py の出力(人物の立ち位置ログ。プライバシー配慮も兼ねて除外)
 person_positions/
+
+# 発射ごとの記録(人の立ち位置を含むため、person_positions/ と同じ理由で除外)
+shots/

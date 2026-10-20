@@ -15,6 +15,11 @@ Webカメラ映像に対して MediaPipe Pose で人物の骨格(関節点)を�
 person_positions/person_position_<実行日時>.csv として出力する
 (realtime_detect.py の trajectories/ と同じ考え方)。
 
+さらに launch_control/ の FireController に立ち位置を渡し、発射機の判断
+(静止を待つ → 狙う → 発射 → 待機)を行う。現状は実機の代わりに MockLauncher を使い、
+状態・角度・メッセージを映像に重ねて表示する(--no-launch-control で無効化)。
+発射の記録は shots/shots.csv に追記される。
+
 'q' キーで終了。
 
 注: 現行バージョンのMediaPipeでは旧来の `mediapipe.solutions.pose` API は
@@ -60,6 +65,11 @@ import platform
 import cv2
 import numpy as np
 import yaml
+
+from launch_control import config as launch_config
+from launch_control.fire_controller import FireController, ShotLogger
+from launch_control.launcher import MockLauncher
+from launch_control.overlay import draw_launch_status
 
 # ---- 設定値 -----------------------------------------------------------
 BASE_DIR = Path(__file__).resolve().parent
@@ -430,6 +440,10 @@ def parse_args():
         help="capture/推論の所要時間・実測fpsを実行中30フレームごとにターミナルへ表示する"
              "(ボトルネック調査用。通常運用では不要)",
     )
+    parser.add_argument(
+        "--no-launch-control", action="store_true",
+        help="発射機の判断(launch_control)を行わず、立ち位置の検出だけを行う",
+    )
     return parser.parse_args()
 
 
@@ -491,6 +505,14 @@ def main():
 
     positions = []  # [(timestamp, u, v, X_cm, Z_cm), ...]
 
+    # 発射機の判断。実機の制御方法が確定するまでは MockLauncher で代用する。
+    launcher = None
+    controller = None
+    if not args.no_launch_control:
+        launcher = MockLauncher()
+        controller = FireController(launcher, shot_logger=ShotLogger(launch_config.SHOTS_CSV))
+        print(f"発射機の判断を有効にしました(MockLauncher)。発射記録: {launch_config.SHOTS_CSV}")
+
     # ウィンドウは起動時に1度だけ作成する。ループ内では作成済みの
     # このウィンドウに対して imshow するだけで、新規ウィンドウは作られない。
     cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
@@ -521,7 +543,11 @@ def main():
             while True:
                 t_capture_start = time.time() if args.debug_fps else None
                 ok, frame = cap.read()
-                t_capture_end = time.time() if args.debug_fps else None
+                # 時刻はキャプチャ直後に取る。判断用は時刻合わせの影響を受けない
+                # monotonic、CSV用は軌道CSVと突き合わせられる実時刻
+                t_frame = time.monotonic()
+                t_frame_wall = time.time()
+                t_capture_end = t_frame_wall if args.debug_fps else None
                 if not ok or frame is None:
                     print("[警告] フレームを取得できませんでした。終了します。")
                     break
@@ -557,6 +583,9 @@ def main():
                             f"合計={total_avg*1000:.1f}ms (~{1.0/total_avg:.1f}fps)"
                         )
                         timing_window.clear()
+
+                # このフレームで信頼できる立ち位置が得られた場合だけ (X, Z) が入る
+                person_xz = None
 
                 if last_landmarks is not None:
                     # 骨格全体を描画
@@ -607,8 +636,8 @@ def main():
                         valid = False
 
                     if ankles_reliable and valid:
-                        timestamp = time.time()
-                        positions.append((timestamp, u, v, X_cm, Z_cm))
+                        person_xz = (X_cm, Z_cm)
+                        positions.append((t_frame_wall, u, v, X_cm, Z_cm))
 
                         info_lines = [
                             f"ankle mid u,v=({u:.1f},{v:.1f})px",
@@ -629,6 +658,13 @@ def main():
                             frame, line, (10, 40 + 30 * i),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2,
                         )
+
+                if controller is not None:
+                    # 推論したフレームでだけ判断する。推論しないフレームの
+                    # last_landmarks は前回の使い回しで、「今見えている」とは言えないため
+                    if run_inference:
+                        controller.update(t_frame, person_xz)
+                    draw_launch_status(frame, controller, launcher)
 
                 cv2.imshow(WINDOW_NAME, frame)
 
@@ -651,6 +687,9 @@ def main():
             # (finallyブロックでのcap.release()・CSV保存は変わらず実行される)。
             print("\n[情報] Ctrl+Cが押されたため終了します。")
         finally:
+            if launcher is not None:
+                launcher.close_gate()
+                launcher.stop()
             cap.release()
             cv2.destroyAllWindows()
 
