@@ -25,7 +25,8 @@ YOLOによる物体検出とカメラキャリブレーションを組み合わ�
 | `calibrate_camera.py` | `images/calibration/` 内のチェッカーボード画像(内部コーナー9x6、1マス25mm)からカメラキャリブレーションを行い、カメラ行列(fx, fy, cx, cy)・歪み係数・再投影誤差を算出して `camera_calibration.yaml` に保存する |
 | `train_yolo.py` | 事前学習済みの `yolov8n.pt` を読み込み、`datasets/merged/data.yaml` を使ってシャトルコック検出モデルを転移学習する(GPU使用、`--epochs`で指定可能・デフォルト50)。結果は `runs/<--nameで指定した名前>/`(デフォルト `shuttlecock_v2`)に保存される |
 | `predict_yolo.py` | 学習済みモデル(`runs/shuttlecock_v2/weights/best.pt`)で `datasets/merged/test/images` に対して推論し、検出結果画像を `runs/predict_test/` に保存する |
-| `realtime_detect.py` | `camera_calibration.yaml` の値と学習済みモデルを使い、Webカメラ映像からシャトルコックをリアルタイム検出して距離(X, Y, Z)を推定・表示する。実行結果は `trajectories/` にCSVとして保存される |
+| `realtime_detect.py` | `camera_calibration.yaml` の値と学習済みモデルを使い、Webカメラ映像からシャトルコックをリアルタイム検出して距離(X, Y, Z)を推定・表示する。さらに `trajectory_predictor.py` で数百ミリ秒先の軌道(`--floor-y-cm` 指定時は落下地点も)をリアルタイム予測し、映像に重ねて表示する。軌道は `trajectories/` に、予測結果は `trajectories/predictions/` にCSVとして保存される |
+| `trajectory_predictor.py` | リアルタイム軌道予測ロジック。直近0.5秒の検出点に等加速度運動モデルをフィットし直して未来の位置・落下時刻を予測する(`realtime_detect.py` から利用)。単体で実行すると `trajectories/` の記録済みCSVを再生して予測精度(静止仮定との比較)を評価する |
 | `visualize_trajectory.py` | `trajectories/` 内の軌道CSVを読み込み、3D軌跡・時系列グラフ(X/Y/Z、見かけサイズ、confidence)を生成して `trajectories/plots/` に保存する。異常値(低confidence、大きな座標ジャンプ)の統計もターミナルに表示する |
 | `smooth_and_predict.py` | `trajectories/` 内の軌道CSVに対し、低confidence行・座標ジャンプ行を除外したうえで平滑化(移動平均 または Savitzky-Golay、`--method`で切替)し、放物運動(等加速度運動)モデルをX/Y/Zにフィットする。フィッティング結果(初期位置・初速度・加速度)とRMSEをターミナルに表示し、生データ・平滑化後・フィット曲線を重ねた3Dグラフを `trajectories/plots/` に、平滑化後データを `<元ファイル名>_smoothed.csv` として保存する |
 | `realtime_pose_detect.py` | MediaPipe Pose Landmarkerを使い、Webカメラ映像から人物の骨格を検出、左右足首の中点を「立ち位置」とみなす。カメラの設置高さ・俯角を仮定した簡易床面投影でX(左右)・Z(奥行き)を概算する(既知サイズが無いため厳密なZ算出はできず、MVP的な近似実装。詳細はスクリプト冒頭のコメント参照)。実行結果は `person_positions/` にCSVとして保存される |
@@ -48,7 +49,7 @@ YOLOによる物体検出とカメラキャリブレーションを組み合わ�
 | `datasets/` | `download_datasets.py` でダウンロードした学習用データセット(`adwproj/`, `pradyumna/`)、自前撮影・アノテーション済みデータセット(`experiment/`)、それらを統合した `merged/`。容量が大きく、再取得可能なため管理しない |
 | `runs/` | `train_yolo.py` の学習結果(重み `weights/best.pt`、学習ログ `results.csv` など)や `predict_yolo.py` の推論結果画像。再実行すれば生成できるため管理しない |
 | `images/` | カメラキャリブレーション用に撮影した画像(`images/calibration/`)。撮影者が写り込む可能性があるため管理しない |
-| `trajectories/` | `realtime_detect.py` の実行結果(軌道CSV)と `visualize_trajectory.py` / `smooth_and_predict.py` が生成するグラフ・平滑化後CSV(`trajectories/plots/`, `*_smoothed.csv`)。実行のたびに増える計測データのため管理しない |
+| `trajectories/` | `realtime_detect.py` の実行結果(軌道CSV、予測CSV `trajectories/predictions/`)と `visualize_trajectory.py` / `smooth_and_predict.py` が生成するグラフ・平滑化後CSV(`trajectories/plots/`, `*_smoothed.csv`)。実行のたびに増える計測データのため管理しない |
 | `person_positions/` | `realtime_pose_detect.py` の実行結果(立ち位置ログCSV)。人物の動きが記録されるためプライバシー配慮も兼ねて管理しない |
 | `weights/` | `*.pt` にマッチするため除外対象。学習済みYOLOモデルに加え、`realtime_pose_detect.py` が初回実行時に自動ダウンロードするMediaPipeのPose Landmarkerモデル(`*.task`)もここに保存され、同様に除外される |
 | `__pycache__/` | Pythonの実行キャッシュ |
@@ -162,6 +163,22 @@ python realtime_detect.py
 実行中は検出結果がウィンドウに表示され、`q` キーで終了できます。終了時に
 `trajectories/shuttle_trajectory_<実行日時>.csv` として軌道データが保存されます。
 
+検出中は、直近の検出点から予測した `--predict-horizon` 秒先(デフォルト0.3秒)までの
+軌道が水色の線で表示されます。`--floor-y-cm` に床面のY座標(カメラ座標系はY下向き。
+カメラが水平ならカメラの床からの高さ)を指定すると、落下までの時間と落下地点
+(X, Z)も予測し、マゼンタの×で表示します。予測結果は
+`trajectories/predictions/shuttle_prediction_<実行日時>.csv` に保存されます。
+
+```bash
+python realtime_detect.py --floor-y-cm 120 --predict-horizon 0.3
+```
+
+予測ロジックはカメラなしでも、記録済みの軌道CSVを再生して評価できます(WSL可)。
+
+```bash
+python trajectory_predictor.py
+```
+
 ```bash
 # 保存された軌道データを可視化する場合
 python visualize_trajectory.py
@@ -202,6 +219,25 @@ python realtime_pose_detect.py
 (スクリプト冒頭のコメント、および床面投影のパラメータ `CAMERA_HEIGHT_CM` /
 `CAMERA_TILT_DEG` を参照)。体育館などの実環境での実測キャリブレーションが
 今後の課題です。
+
+## 今後の課題(保留中)
+
+- **カメラ設置位置の実測と床面投影パラメータの調整**:実機の組み立て時に、カメラの
+  設置高さ・俯角を実測して反映する。`realtime_pose_detect.py` の
+  `CAMERA_HEIGHT_CM` / `CAMERA_TILT_DEG` と、`realtime_detect.py` の
+  `--floor-y-cm`(現状はカメラが水平という前提で、俯角は未対応)が対象。
+- **シャトル奥行き(Z)推定の精度向上**:現状は見かけサイズからの逆算で、X/Yより
+  1桁ノイズが大きい(`trajectory_predictor.py` ではZのフィットを1次式に制限して
+  対処している)。シャトル発射機の性能(初速・角度ごとの軌道)を後から登録し、
+  それを事前情報として使う形を想定。発射の強さは固定で、制御するのは
+  発射タイミングのみの予定。
+- **発射角度ごとの軌道データの収集・学習**:組み立て後に、各発射角度での飛行を
+  動画撮影し、シャトル軌道の学習データとして使う。リアルタイム予測の精度評価にも
+  使える(現在の記録済みCSVはシャトルの実際の飛行ではないため、予測精度の評価には
+  向かない)。
+- **シャトル検出と人物検出の統合**:テストのしやすさを優先し、現状は
+  `realtime_detect.py` と `realtime_pose_detect.py` を別スクリプトのままにしている。
+- **シャトル発射機との連携**:仕様が固まっていないため保留中。
 
 ## 既知の注意点
 

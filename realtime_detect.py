@@ -11,6 +11,12 @@ Webカメラ映像に対してYOLOモデルで推論し、検出されたシャ�
 trajectories/shuttle_trajectory_<実行日時>.csv として出力する
 (過去の実行結果を上書きせず、実行ごとに別ファイルとして残す)。
 
+さらに、直近の検出点に放物運動モデルをフィットして数百ミリ秒先の位置を
+リアルタイムに予測し(trajectory_predictor.py)、予測軌道を映像に重ねて
+表示する。予測結果は trajectories/predictions/shuttle_prediction_<実行日時>.csv
+に保存する。--floor-y-cm を指定すると、Yがその値に達する時刻・位置を
+落下地点として予測・表示する。
+
 'q' キーで終了。
 """
 
@@ -27,6 +33,8 @@ import platform
 import cv2
 import numpy as np
 import yaml
+
+from trajectory_predictor import RealtimeTrajectoryPredictor
 
 # ---- 設定値 -----------------------------------------------------------
 BASE_DIR = Path(__file__).resolve().parent
@@ -59,6 +67,15 @@ CONFIDENCE_THRESHOLD = 0.25  # YOLO推論時の信頼度しきい値
 # 軌道CSVの出力先ディレクトリ。実行ごとに実行日時をファイル名に含めて保存し、
 # 過去の実行結果を上書きしないようにする。
 TRAJECTORY_OUTPUT_DIR = BASE_DIR / "trajectories"
+# 予測結果CSVの出力先。visualize_trajectory.py / smooth_and_predict.py は
+# trajectories/*.csv を軌道CSVとして読み込むため、列構成の違う予測CSVは
+# サブフォルダに分けて置く。
+PREDICTION_OUTPUT_DIR = TRAJECTORY_OUTPUT_DIR / "predictions"
+
+# 何秒先までの軌道を予測・表示するか(--predict-horizon で変更可能)
+DEFAULT_PREDICT_HORIZON_SEC = 0.3
+# 落下地点予測を何秒先まで探すか(これより先に床に届く予測は表示しない)
+MAX_LANDING_SEARCH_SEC = 3.0
 
 # YOLOのPredictorが内部的に作る保存先ディレクトリ(未使用でも初期化時に
 # パス解決される)。BASE_DIR配下(\\wsl.localhost\... のネットワークパス)を
@@ -274,6 +291,17 @@ def open_camera(device_index: int, desired_width: int, desired_height: int, desi
     return cap, actual_width, actual_height
 
 
+def project_to_image(points_xyz, fx, fy, cx, cy):
+    """カメラ座標系の点列 (N, 3) [cm] を画像座標 (u, v) に投影する。
+    カメラより手前(Z <= 0)の点は投影できないため除外する。
+    """
+    pts = np.asarray(points_xyz, dtype=float)
+    pts = pts[pts[:, 2] > 0]
+    u = fx * pts[:, 0] / pts[:, 2] + cx
+    v = fy * pts[:, 1] / pts[:, 2] + cy
+    return np.stack([u, v], axis=1)
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="リアルタイムシャトルコック検出・距離推定スクリプト",
@@ -282,6 +310,15 @@ def parse_args():
         "--debug-fps", action="store_true",
         help="capture/推論の所要時間・実測fpsを実行中30フレームごとにターミナルへ表示する"
              "(ボトルネック調査用。通常運用では不要)",
+    )
+    parser.add_argument(
+        "--predict-horizon", type=float, default=DEFAULT_PREDICT_HORIZON_SEC,
+        help=f"何秒先までの軌道を予測・表示するか(デフォルト: {DEFAULT_PREDICT_HORIZON_SEC})",
+    )
+    parser.add_argument(
+        "--floor-y-cm", type=float, default=None,
+        help="カメラ座標系(Y下向き)で床面とみなすYの値[cm]。指定すると落下地点を予測する。"
+             "カメラが水平ならカメラの床からの高さに相当する(俯角がある場合は未対応)",
     )
     return parser.parse_args()
 
@@ -351,6 +388,11 @@ def main():
 
     trajectory = []  # [(timestamp, X, Y, Z, u, v, w, h, confidence), ...]
 
+    predictor = RealtimeTrajectoryPredictor()
+    # [(timestamp, horizon, pred_X, pred_Y, pred_Z, fit_degree, n_points,
+    #   landing_timestamp, landing_X, landing_Y, landing_Z), ...]
+    predictions = []
+
     # ウィンドウは起動時に1度だけ作成する。ループ内では作成済みの
     # このウィンドウに対して imshow するだけで、新規ウィンドウは作られない。
     cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
@@ -364,7 +406,10 @@ def main():
         while True:
             t_capture_start = time.time() if args.debug_fps else None
             ok, frame = cap.read()
-            t_capture_end = time.time() if args.debug_fps else None
+            # 検出時刻はキャプチャ直後に取る(推論後に取ると推論時間分だけ
+            # 時刻がずれ、軌道予測の速度・タイミングに誤差が乗るため)
+            t_frame = time.time()
+            t_capture_end = t_frame if args.debug_fps else None
             if not ok or frame is None:
                 print("[警告] フレームを取得できませんでした。終了します。")
                 break
@@ -442,8 +487,9 @@ def main():
                     X = (u - cx_use) * Z / fx_use
                     Y = (v - cy_use) * Z / fy_use
 
-                    timestamp = time.time()
+                    timestamp = t_frame
                     trajectory.append((timestamp, X, Y, Z, u, v, w, h, best_conf))
+                    predictor.update(timestamp, X, Y, Z, best_conf)
 
                     # 最も信頼度の高い検出は赤枠で強調
                     cv2.rectangle(
@@ -465,6 +511,51 @@ def main():
                         f"u={u:.1f} v={v:.1f} w={w:.1f} h={h:.1f}px  "
                         f"X={X:.2f} Y={Y:.2f} Z={Z:.2f}cm  conf={best_conf:.2f}"
                     )
+
+            # ---- 軌道予測(検出が一瞬途切れたフレームでも、直近のフィットで予測を続ける)
+            now = time.time()
+            if predictor.is_active(now):
+                path_xyz = predictor.predict_path(now, args.predict_horizon)
+                path_uv = project_to_image(path_xyz, fx_use, fy_use, cx_use, cy_use)
+                if len(path_uv) >= 2:
+                    cv2.polylines(
+                        frame, [path_uv.astype(np.int32).reshape(-1, 1, 2)],
+                        isClosed=False, color=(255, 255, 0), thickness=2,
+                    )
+                pX, pY, pZ = path_xyz[-1]
+
+                landing = None
+                if args.floor_y_cm is not None:
+                    t_land = predictor.time_to_reach_y(args.floor_y_cm, now)
+                    if t_land is not None and t_land - now <= MAX_LANDING_SEARCH_SEC:
+                        landing = (t_land, *predictor.predict(t_land))
+
+                pred_lines = [
+                    f"pred +{args.predict_horizon:.2f}s: X={pX:.1f} Y={pY:.1f} Z={pZ:.1f}cm"
+                    f"  (deg={predictor.fit_degree}, n={predictor.n_points})",
+                ]
+                if landing is not None:
+                    t_land, lX, lY, lZ = landing
+                    pred_lines.append(
+                        f"landing in {t_land - now:.2f}s: X={lX:.1f} Z={lZ:.1f}cm"
+                    )
+                    land_uv = project_to_image([(lX, lY, lZ)], fx_use, fy_use, cx_use, cy_use)
+                    if len(land_uv) == 1:
+                        cv2.drawMarker(
+                            frame, tuple(land_uv[0].astype(int)), (255, 0, 255),
+                            markerType=cv2.MARKER_TILTED_CROSS, markerSize=30, thickness=3,
+                        )
+                for i, line in enumerate(pred_lines):
+                    cv2.putText(
+                        frame, line, (10, 100 + 30 * i),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 0), 2,
+                    )
+
+                predictions.append(
+                    (now, args.predict_horizon, pX, pY, pZ,
+                     predictor.fit_degree, predictor.n_points)
+                    + (landing if landing is not None else ("", "", "", ""))
+                )
 
             cv2.imshow(WINDOW_NAME, frame)
 
@@ -506,6 +597,22 @@ def main():
             print(f"軌道データを保存しました: {output_csv} ({len(trajectory)} 件)")
         else:
             print("シャトルコックが検出されなかったため、CSVは出力しませんでした。")
+
+        # ---- 予測結果をCSVに保存 ------------------------------------------------
+        if predictions:
+            PREDICTION_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+            run_timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_csv = PREDICTION_OUTPUT_DIR / f"shuttle_prediction_{run_timestamp}.csv"
+
+            with open(output_csv, "w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerow(
+                    ["timestamp", "horizon_sec", "pred_X_cm", "pred_Y_cm", "pred_Z_cm",
+                     "fit_degree", "n_points", "landing_timestamp",
+                     "landing_X_cm", "landing_Y_cm", "landing_Z_cm"]
+                )
+                writer.writerows(predictions)
+            print(f"予測データを保存しました: {output_csv} ({len(predictions)} 件)")
 
 
 if __name__ == "__main__":
