@@ -59,12 +59,174 @@ YOLOによる物体検出とカメラキャリブレーションを組み合わ�
 
 ## 新しい環境でのセットアップ手順
 
-### 1. リポジトリをclone
+### 0. はじめに
+
+#### やりたいこと別の進め方
+
+全部の手順を最初から順にやる必要はありません。目的に合わせて必要な手順だけ進めてください。
+新しいPCで始める場合は、先に [準備](#準備-開発環境wsl2--ubuntuの用意) でWSL2 + Ubuntuを
+用意してください。
+
+| やりたいこと | 必要な手順 | 実行環境 | 目安時間 |
+|---|---|---|---|
+| 🧪 カメラなしで発射判断・軌道予測ロジックを試す | 1 → 2 → 3 → [動作確認](#動作確認カメラなし) | WSL / Windows | 約15分 |
+| 🎥 学習済みモデルでリアルタイム検出を試す | 1 → 2 → 3 → 6(`best.pt` を共有してもらう)→ 8 | Windows | 約30分 |
+| 🏋️ データセット取得からモデルを学習し直す | 1 → 2 → 3 → 4 → 5 → 6 | WSL(GPU) | 数時間 |
+| 📷 別のカメラに替える | 7 → 8 | Windows | 約30分 |
+
+#### 全体の流れ
+
+```mermaid
+flowchart LR
+    A[1. clone] --> B[2. 仮想環境]
+    B --> C[3. ライブラリ]
+    C --> D[4. .env]
+    D --> E[5. データセット]
+    E --> F[6. 学習]
+    C -.学習済みモデルを共有してもらう.-> F
+    F --> G[8. リアルタイム検出]
+    H[7. キャリブレーション] --> G
+```
+
+#### 必要なもの
+
+| 項目 | 内容 | 必要な手順 |
+|---|---|---|
+| OS | Windows 11 + WSL2(Ubuntu 24.04 LTS) | すべて |
+| Python | WSL側は 3.12、Windows側は 3.13 で動作確認済み | すべて |
+| NVIDIA GPU + ドライバ | Windows側にドライバを入れる。CUDA 12.4 対応版の PyTorch を使用。GPUがなければ学習は省略して `best.pt` を共有してもらう | 6 |
+| Roboflow アカウント | APIキーの発行に必要 | 4, 5 |
+| Webカメラ | Windows側から認識できるUSBカメラ | 7, 8, 10 |
+| チェッカーボード | 内部コーナー9x6、1マス25mm(印刷したものでOK) | 7 |
+
+> [!IMPORTANT]
+> **開発はWSL、カメラを使う実行はWindows** という役割分担です。WSLはUSBカメラに
+> 直接アクセスできないため、手順 7・8・10 はWindows側(`venv_win`)で実行してください。
+> 両方使う場合は、手順2・3を WSL と Windows それぞれで行います。
+
+---
+
+### 準備. 開発環境(WSL2 + Ubuntu)の用意
+
+開発は **Windows 11 上の WSL2 + Ubuntu 24.04 LTS** を前提にしています。すでにUbuntuが
+動いていて `nvidia-smi` でGPUが見える場合は、[P-3](#p-3-ubuntuに必要なパッケージを入れる)
+から確認してください。
+
+#### P-1. WSL2 と Ubuntu 24.04 のインストール(Windows側)
+
+**管理者として開いたPowerShell** で実行します。
+
+```powershell
+wsl --install -d Ubuntu-24.04
+```
+
+完了したらPCを再起動します。再起動後にUbuntuのウィンドウが開くので、Linux用の
+ユーザー名とパスワードを設定してください(Windowsのアカウントとは別物です。
+`sudo` のときに使います)。
+
+✅ **確認**(PowerShell):`VERSION` が `2` になっていればOKです。
+
+```powershell
+wsl -l -v
+```
+
+<details>
+<summary>⚠️ VERSION が 1 になっている場合</summary>
+
+```powershell
+wsl --set-version Ubuntu-24.04 2
+```
+
+「仮想マシンプラットフォーム」が無効だと言われた場合は、BIOS/UEFIで仮想化
+(Intel VT-x / AMD-V)が有効になっているか確認してください。
+
+</details>
+
+#### P-2. NVIDIA ドライバ(Windows側だけに入れる)
+
+学習(手順6)でGPUを使う場合に必要です。
+
+- NVIDIA公式サイトから、GPUに合った **Windows用** のドライバ(Game Ready / Studio)を
+  インストールする。WSL2からはWindows側のドライバがそのまま使われる
+- **Ubuntu側にLinux用のNVIDIAドライバを入れないでください。** WSLのGPU連携が壊れます
+- CUDA Toolkit のインストールは不要です。PyTorchのパッケージにCUDAの実行に必要な
+  ライブラリが含まれています
+
+✅ **確認**(Ubuntu):GPU名とドライバのバージョンが表示されればOKです。
 
 ```bash
+nvidia-smi
+```
+
+(参考:開発機は GeForce RTX 3050 6GB Laptop GPU、ドライバ 581.86 で動作確認済み)
+
+#### P-3. Ubuntuに必要なパッケージを入れる
+
+ここから先はUbuntuのターミナルで実行します。
+
+```bash
+sudo apt update && sudo apt upgrade -y
+sudo apt install -y python3.12-venv python3-pip git curl unzip libgl1 libglib2.0-0t64
+```
+
+| パッケージ | 用途 |
+|---|---|
+| `python3.12-venv`, `python3-pip` | 仮想環境の作成とpip(Ubuntu 24.04 はPython 3.12が標準で入っている) |
+| `git` | リポジトリのclone |
+| `curl`, `unzip` | 自前撮影データセットのダウンロードと展開(手順5-1) |
+| `libgl1`, `libglib2.0-0t64` | OpenCV(`cv2`)のimportに必要なライブラリ |
+
+✅ **確認**:
+
+```bash
+python3 --version   # Python 3.12.x
+git --version
+```
+
+#### P-4. Gitの初期設定
+
+```bash
+git config --global user.name "あなたの名前"
+git config --global user.email "あなたのメールアドレス"
+```
+
+pushする場合はGitHubの認証も必要です。GitHub CLI(`sudo apt install -y gh`)を入れて
+`gh auth login` を実行するのが簡単です。
+
+#### P-5. Windows側のPython(カメラを使う場合)
+
+手順7・8・10 はWindows側で実行するため、WindowsにもPythonが必要です。PowerShellで
+インストールします(python.org のインストーラーを使う場合は「Add python.exe to PATH」に
+チェックを入れてください)。
+
+```powershell
+winget install -e --id Python.Python.3.13
+```
+
+✅ **確認**(新しく開いたPowerShell):
+
+```powershell
+python --version   # Python 3.13.x
+```
+
+---
+
+### 1. リポジトリをclone
+
+Ubuntuのターミナルで、**ホームディレクトリ(`~`)の下に** cloneします。
+
+```bash
+cd ~
 git clone https://github.com/RK200781/atom-badminton-ai.git
 cd atom-badminton-ai
 ```
+
+> [!TIP]
+> `/mnt/c/...`(Windows側のフォルダ)の下にcloneすると、ファイルの読み書きが非常に
+> 遅くなり、学習やデータセットの統合に時間がかかります。Ubuntu側に置いてください。
+> Windows側からは、エクスプローラーやPowerShellで
+> `\\wsl.localhost\Ubuntu-24.04\home\<Linuxのユーザー名>\atom-badminton-ai`
+> として同じフォルダを開けます(手順2の `venv_win` もこのフォルダに作ります)。
 
 ### 2. Python仮想環境の作成・有効化
 
@@ -75,29 +237,91 @@ python3 -m venv venv
 source venv/bin/activate
 ```
 
-**Windows の場合:**
+**Windows (PowerShell) の場合:**
 
 ```powershell
 python -m venv venv_win
 venv_win\Scripts\Activate.ps1
 ```
 
+✅ **確認**:プロンプトの先頭に `(venv)` / `(venv_win)` と表示されればOKです。
+
+<details>
+<summary>⚠️ Windowsで「スクリプトの実行が無効になっている」と言われる場合</summary>
+
+PowerShellの実行ポリシーで `Activate.ps1` がブロックされています。そのウィンドウの間だけ
+許可してから、もう一度有効化してください。
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned
+venv_win\Scripts\Activate.ps1
+```
+
+</details>
+
 ### 3. ライブラリのインストール
 
+`requirements.txt` の PyTorch は CUDA 12.4 版(`torch==2.6.0+cu124`)で、通常の PyPI には
+置かれていません。PyTorch の配布元を追加してインストールします。
+
 ```bash
-pip install -r requirements.txt
+pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cu124
 ```
+
+✅ **確認**:主要パッケージが読み込めて、GPUが認識されているか確認します。
+
+```bash
+python -c "import torch, ultralytics, cv2, mediapipe; print('torch', torch.__version__, '/ CUDA:', torch.cuda.is_available())"
+```
+
+`CUDA: True` なら学習にGPUを使えます。`False` でも検出・判断ロジックの実行は可能です
+(学習だけは時間がかかりすぎるため、GPU環境で行うか `best.pt` を共有してもらってください)。
+
+> [!NOTE]
+> `roboflow` の依存関係により `opencv-python-headless` も入り、`numpy` は 2.3.5 に
+> 固定されます。パッケージを個別に更新すると衝突しやすいので注意してください
+> (「既知の注意点」参照)。
 
 ### 4. `.env` ファイルの作成
 
-リポジトリ直下に `.env` ファイルを作成し、自分のRoboflow APIキーを設定してください
+> 手順5(データセットの取得)をしない場合は不要です。
+
+Roboflowにログインし、[Settings → API Keys](https://app.roboflow.com/settings/api) から
+APIキーを確認します。リポジトリ直下に `.env` ファイルを作成し、APIキーを設定してください
 (このファイルはGit管理外なので、各自で作成する必要があります)。
 
 ```
 ROBOFLOW_API_KEY=あなたのAPIキー
 ```
 
+> [!CAUTION]
+> APIキーは秘密情報です。`.env` をコミットしたり、チャットなどに貼り付けたりしないでください。
+
 ### 5. データセットの取得
+
+#### 5-1. 自前撮影データセットの配置(推奨)
+
+現在主軸のモデル `shuttlecock_v2` は、公開データセット2種に加えて自前撮影・アノテーション
+済みのデータセット(Roboflowプロジェクト `-kz8ad/atom-badminton-ai`)でも学習しています。
+APIキー付きの個人エクスポートリンクをスクリプトに埋め込まないよう、このデータセットだけは
+手動で配置します。
+
+1. Roboflowでプロジェクトを開き、YOLOv8形式でエクスポートして、ダウンロード用リンクを取得する
+   (プロジェクトへのアクセス権がない場合は、チームメンバーに招待してもらう)
+2. 以下を実行する
+
+```bash
+mkdir -p datasets/experiment
+cd datasets/experiment
+curl -L "https://app.roboflow.com/ds/<エクスポートID>?key=<キー>" -o roboflow.zip
+unzip roboflow.zip && rm roboflow.zip
+cd ../..
+```
+
+`datasets/experiment/` がない場合でも次の手順は動きますが、公開データセット2種だけでの
+統合になり、`shuttlecock_v2` と同じモデルは再現できません。
+
+#### 5-2. ダウンロードと統合
 
 ```bash
 python download_datasets.py
@@ -107,39 +331,54 @@ python download_datasets.py
 `datasets/merged/`(`train_yolo.py` / `predict_yolo.py` が参照する統合データセット)が
 自動的に作成されます。統合処理はスクリプト内で以下を行います。
 
-- train/valid/testそれぞれについて、`adwproj`・`pradyumna`(・存在すれば自前撮影データ
-  `datasets/experiment/`)のimages・labelsを `datasets/merged/<split>/images`, `labels`
-  にコピー
+- train/valid/testそれぞれについて、`adwproj`・`pradyumna`(・存在すれば `experiment`)の
+  images・labelsを `datasets/merged/<split>/images`, `labels` にコピー
 - コピー時にファイル名の重複がないか確認し、重複があれば警告してスキップ
 - `datasets/merged/data.yaml`(`nc: 1`, `names: ['shuttlecock']`)を生成
 
 再実行するたびに `datasets/merged/` は作り直されるため、常にダウンロード済みの
-最新データセットの内容と一致します。`datasets/experiment/` は自前撮影・アノテーション
-済みのデータセットで、Roboflowからの再ダウンロードはこのスクリプトでは行わない
-(スクリプト冒頭のコメント参照。手動で配置しておく)。
+最新データセットの内容と一致します。
+
+✅ **確認**:`datasets/merged/data.yaml` があり、`datasets/merged/train/images/` に画像が
+入っていればOKです。
 
 ### 6. モデルの学習(または学習済みモデルの共有)
 
-GPU環境がある場合は、自分で学習できます。
+#### A. 自分で学習する(GPU環境がある場合)
 
 ```bash
 python train_yolo.py --name shuttlecock_v2
 ```
 
-`--name`(デフォルト: `shuttlecock_v2`)で `runs/<name>/` に保存先を指定できる。
-既存の学習結果を上書きしないよう、再学習のたびに別名を指定すること。
-`--epochs`(デフォルト50)でエポック数も指定可能。
+| オプション | デフォルト | 説明 |
+|---|---|---|
+| `--name` | `shuttlecock_v2` | 保存先 `runs/<name>/`。既存の学習結果を上書きしないよう、再学習のたびに別名を指定すること |
+| `--epochs` | 50 | 学習エポック数 |
 
-学習結果は `runs/shuttlecock_v2/weights/best.pt` に保存されます。**現在このモデルを
-主軸として使用しています**(adwproj + pradyumna + 自前撮影データで学習、旧
-`shuttlecock_baseline` よりPrecision/Recall/mAP50が向上)。`realtime_detect.py` /
-`predict_yolo.py` はデフォルトでこのパスを参照します。
+学習結果は `runs/<name>/weights/best.pt` に保存されます。**現在は
+`runs/shuttlecock_v2/weights/best.pt` を主軸として使用しています**(adwproj + pradyumna +
+自前撮影データで学習、旧 `shuttlecock_baseline` よりPrecision/Recall/mAP50が向上)。
+`realtime_detect.py` / `predict_yolo.py` はデフォルトでこのパスを参照するため、
+別名で学習したモデルを使う場合はスクリプト内のパスを書き換えてください。
+
+✅ **確認**:テスト画像に対して推論し、検出結果を目で確認できます。
+
+```bash
+python predict_yolo.py   # 結果画像は runs/predict_test/ に保存される
+```
+
+#### B. 学習済みモデルを共有してもらう
 
 GPU環境がない、またはすぐに `realtime_detect.py` を試したい場合は、チームメンバーから
-学習済みの `best.pt` を共有してもらい、同じパス `runs/shuttlecock_v2/weights/best.pt`
-に配置してください。
+学習済みの `best.pt` を共有してもらい、次のパスに配置してください。
+
+```
+runs/shuttlecock_v2/weights/best.pt
+```
 
 ### 7. カメラキャリブレーション
+
+> リポジトリに含まれる `camera_calibration.yaml` と同じカメラを使う場合は不要です。
 
 `camera_calibration.yaml` は撮影に使ったカメラの機種・解像度に紐づいた値です。
 **別のカメラを使う場合は、必ず再キャリブレーションしてください。**
@@ -154,14 +393,22 @@ python calibrate_camera.py
 
 `camera_calibration.yaml` が新しい値で上書き保存されます。
 
+> [!TIP]
+> きれいに校正するコツ:
+> - ボードを画面の中央だけでなく、四隅・端にも写す
+> - 正面からだけでなく、斜めに傾けた写真も混ぜる
+> - ブレ・ピンボケ・反射のある写真は除く
+> - 実行時に表示される再投影誤差が小さいほど良好(目安として1ピクセル未満)
+
 ### 8. リアルタイム検出の実行
+
+> [!IMPORTANT]
+> **Windows側(`venv_win`)で実行してください。** WSLはUSBカメラに直接アクセスできないため、
+> `realtime_detect.py` はWSL上では動作しません。
 
 ```bash
 python realtime_detect.py
 ```
-
-**Windows側での実行を推奨します。** WSLはUSBカメラに直接アクセスできないため、
-`realtime_detect.py` はWSL上では動作しません(詳しくは次の「既知の注意点」を参照)。
 
 実行中は検出結果がウィンドウに表示され、`q` キーで終了できます。終了時に
 `trajectories/shuttle_trajectory_<実行日時>.csv` として軌道データが保存されます。
@@ -176,6 +423,12 @@ python realtime_detect.py
 python realtime_detect.py --floor-y-cm 120 --predict-horizon 0.3
 ```
 
+| オプション | デフォルト | 説明 |
+|---|---|---|
+| `--predict-horizon` | 0.3 | 何秒先までの軌道を予測・表示するか |
+| `--floor-y-cm` | なし | 床面のY座標[cm]。指定すると落下地点を予測する(カメラに俯角がある場合は未対応) |
+| `--debug-fps` | オフ | capture/推論の所要時間・実測fpsを30フレームごとにターミナルへ表示する(ボトルネック調査用) |
+
 予測ロジックはカメラなしでも、記録済みの軌道CSVを再生して評価できます(WSL可)。
 
 ```bash
@@ -186,6 +439,37 @@ python trajectory_predictor.py
 # 保存された軌道データを可視化する場合
 python visualize_trajectory.py
 ```
+
+<details>
+<summary>🔧 うまく動かないとき</summary>
+
+| 症状 | 確認すること |
+|---|---|
+| モデルが見つからないと言われる | `runs/shuttlecock_v2/weights/best.pt` が存在するか(手順6) |
+| カメラが開けない | WSLではなくWindows側で実行しているか。他のアプリ(Zoom、Teamsなど)がカメラを使っていないか |
+| 距離(X, Y, Z)が明らかにおかしい | 使っているカメラ・解像度が `camera_calibration.yaml` を作ったときと同じか(手順7) |
+| fpsが低い | `--debug-fps` でcaptureと推論のどちらが遅いか確認する |
+| `cv2` や `numpy` のimportエラー | パッケージを個別に更新していないか。手順3のコマンドで入れ直す |
+
+</details>
+
+### 動作確認(カメラなし)
+
+カメラやGPUがなくても、以下でセットアップが正しくできたか確認できます(WSL可)。
+
+```bash
+python -m unittest discover -s tests       # 単体テスト
+python -m launch_control.demo_sim          # 発射判断のシミュレーション(詳細は手順11)
+```
+
+### ✅ セットアップ完了チェックリスト
+
+- [ ] 仮想環境が有効になっている(手順2)
+- [ ] `torch` / `ultralytics` / `cv2` / `mediapipe` がimportできる(手順3)
+- [ ] 単体テストが通る([動作確認](#動作確認カメラなし))
+- [ ] `runs/shuttlecock_v2/weights/best.pt` がある(手順6)
+- [ ] 使うカメラに合った `camera_calibration.yaml` がある(手順7)
+- [ ] Windows側で `realtime_detect.py` のウィンドウが開き、シャトルが検出される(手順8)
 
 ### 9. 軌道の平滑化・放物運動フィッティング(任意)
 
