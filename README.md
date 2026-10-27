@@ -32,7 +32,7 @@ YOLOによる物体検出とカメラキャリブレーションを組み合わ�
 | `realtime_pose_detect.py` | MediaPipe Pose Landmarkerを使い、Webカメラ映像から人物の骨格を検出、左右足首の中点を「立ち位置」とみなす。カメラの設置高さ・俯角を仮定した簡易床面投影でX(左右)・Z(奥行き)を概算する(既知サイズが無いため厳密なZ算出はできず、MVP的な近似実装。詳細はスクリプト冒頭のコメント参照)。実行結果は `person_positions/` にCSVとして保存される。立ち位置は `launch_control/` の発射判断にも渡される(`--no-launch-control` で無効化) |
 | `launch_control/` | シャトル発射機の「判断と行動」部分(ダミー版、標準ライブラリ中心)。`config.py`(設定値・仰角→距離の対応表)、`aiming.py`(座標変換・パン/チルト角の計算)、`launcher.py`(ハードウェアの抽象化、`MockLauncher` / 未実装の `AK45Launcher`)、`fire_controller.py`(発射判断の状態機械と `shots.csv` への記録)、`overlay.py`(映像への状態表示)、`demo_sim.py`(カメラなしのシミュレーション)。詳細は下記「11. 発射機の判断(ダミー版)」 |
 | `tests/` | 単体テスト(`python -m unittest discover -s tests`) |
-| `download_datasets.py` | Roboflow上のシャトルコック検出用データセット2種を `datasets/adwproj/`, `datasets/pradyumna/` にダウンロードし(`.env` の `ROBOFLOW_API_KEY` を使用)、続けて自前撮影・アノテーション済みデータセット `datasets/experiment/`(存在する場合。手動で配置。スクリプト冒頭のコメント参照)も含めて `datasets/merged/` に統合する(train/valid/testごとにimages・labelsをコピーし、ファイル名の重複がないか確認、`data.yaml` を生成) |
+| `download_datasets.py` | `.env` の `ROBOFLOW_API_KEY` を使い、Roboflow上のシャトルコック検出用データセット2種(`datasets/adwproj/`, `datasets/pradyumna/`)と自前撮影・アノテーション済みデータセット(`datasets/experiment/`)をダウンロードし、続けて `datasets/merged/` に統合する(train/valid/testごとにimages・labelsをコピーし、ファイル名の重複がないか確認、`data.yaml` を生成) |
 
 ### 設定・データファイル
 
@@ -166,14 +166,13 @@ nvidia-smi
 
 ```bash
 sudo apt update && sudo apt upgrade -y
-sudo apt install -y python3.12-venv python3-pip git curl unzip libgl1 libglib2.0-0t64
+sudo apt install -y python3.12-venv python3-pip git libgl1 libglib2.0-0t64
 ```
 
 | パッケージ | 用途 |
 |---|---|
 | `python3.12-venv`, `python3-pip` | 仮想環境の作成とpip(Ubuntu 24.04 はPython 3.12が標準で入っている) |
 | `git` | リポジトリのclone |
-| `curl`, `unzip` | 自前撮影データセットのダウンロードと展開(手順5-1) |
 | `libgl1`, `libglib2.0-0t64` | OpenCV(`cv2`)のimportに必要なライブラリ |
 
 ✅ **確認**:
@@ -299,48 +298,44 @@ ROBOFLOW_API_KEY=あなたのAPIキー
 
 ### 5. データセットの取得
 
-#### 5-1. 自前撮影データセットの配置(推奨)
-
-現在主軸のモデル `shuttlecock_v2` は、公開データセット2種に加えて自前撮影・アノテーション
-済みのデータセット(Roboflowプロジェクト `-kz8ad/atom-badminton-ai`)でも学習しています。
-APIキー付きの個人エクスポートリンクをスクリプトに埋め込まないよう、このデータセットだけは
-手動で配置します。
-
-1. Roboflowでプロジェクトを開き、YOLOv8形式でエクスポートして、ダウンロード用リンクを取得する
-   (プロジェクトへのアクセス権がない場合は、チームメンバーに招待してもらう)
-2. 以下を実行する
-
-```bash
-mkdir -p datasets/experiment
-cd datasets/experiment
-curl -L "https://app.roboflow.com/ds/<エクスポートID>?key=<キー>" -o roboflow.zip
-unzip roboflow.zip && rm roboflow.zip
-cd ../..
-```
-
-`datasets/experiment/` がない場合でも次の手順は動きますが、公開データセット2種だけでの
-統合になり、`shuttlecock_v2` と同じモデルは再現できません。
-
-#### 5-2. ダウンロードと統合
+`.env` にAPIキーを書いたら、WSL側で以下を実行するだけです。
 
 ```bash
 python download_datasets.py
 ```
 
-`datasets/adwproj/` と `datasets/pradyumna/` にデータセットがダウンロードされ、続けて
-`datasets/merged/`(`train_yolo.py` / `predict_yolo.py` が参照する統合データセット)が
-自動的に作成されます。統合処理はスクリプト内で以下を行います。
+次の3つのデータセットがダウンロードされ、続けて `datasets/merged/`(`train_yolo.py` /
+`predict_yolo.py` が参照する統合データセット)が自動的に作成されます。
 
-- train/valid/testそれぞれについて、`adwproj`・`pradyumna`(・存在すれば `experiment`)の
-  images・labelsを `datasets/merged/<split>/images`, `labels` にコピー
+| 保存先 | データセット | 枚数(train / valid / test) |
+|---|---|---|
+| `datasets/adwproj/` | 公開データセット(Roboflow Universe) | 647 / 178 / 86 |
+| `datasets/pradyumna/` | 公開データセット(Roboflow Universe) | 392 / 20 / 10 |
+| `datasets/experiment/` | 自前撮影・アノテーション済み(Roboflowプロジェクト `-kz8ad/atom-badminton-ai` v1) | 234 / 67 / 33 |
+| **`datasets/merged/`** | **上の3つを統合したもの** | **1273 / 265 / 129** |
+
+統合処理はスクリプト内で以下を行います。
+
+- train/valid/testそれぞれについて、3つのデータセットのimages・labelsを
+  `datasets/merged/<split>/images`, `labels` にコピー
 - コピー時にファイル名の重複がないか確認し、重複があれば警告してスキップ
 - `datasets/merged/data.yaml`(`nc: 1`, `names: ['shuttlecock']`)を生成
 
 再実行するたびに `datasets/merged/` は作り直されるため、常にダウンロード済みの
-最新データセットの内容と一致します。
+最新データセットの内容と一致します。何度実行しても問題ありません。
 
-✅ **確認**:`datasets/merged/data.yaml` があり、`datasets/merged/train/images/` に画像が
-入っていればOKです。
+✅ **確認**:ターミナルに `自前撮影データセットを検出しました` と表示され、最後の統合結果が
+上の表の `datasets/merged/` の枚数と一致すればOKです。
+
+<details>
+<summary>⚠️ 「自前撮影データセットをダウンロードできませんでした」と表示される場合</summary>
+
+`.env` のAPIキーのアカウントが、自前撮影データセットのプロジェクトにアクセスできていません。
+このとき統合は公開データセット2種だけで続行されるため、`shuttlecock_v2` と同じモデルは
+再現できません。プロジェクトのあるRoboflowワークスペースに招待してもらい、そのワークスペースの
+APIキーを `.env` に設定してから、もう一度実行してください。
+
+</details>
 
 ### 6. モデルの学習(または学習済みモデルの共有)
 

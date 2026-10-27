@@ -10,17 +10,9 @@ DATASETS_DIR = BASE_DIR / "datasets"
 MERGED_DIR = DATASETS_DIR / "merged"
 
 # 自前撮影・アノテーション済みのデータセット(Roboflowプロジェクト
-# "-kz8ad/atom-badminton-ai")。APIキー付きの個人エクスポートリンクを
-# ここに埋め込むのは望ましくないため、再ダウンロードはこのスクリプトでは
-# 行わず、あらかじめ以下の手順で手動配置しておいたものをそのまま使う。
-#
-#   mkdir -p datasets/experiment
-#   cd datasets/experiment
-#   curl -L "https://app.roboflow.com/ds/<エクスポートID>?key=<キー>" -o roboflow.zip
-#   unzip roboflow.zip && rm roboflow.zip
-#   cd ../..
-#
-# 存在しない場合は警告を出し、adwproj・pradyumnaの2つだけで統合を続行する。
+# "-kz8ad/atom-badminton-ai")。公開データセット2種と同じく .env のAPIキーで
+# ダウンロードする。キーにアクセス権がない場合は警告を出し、
+# adwproj・pradyumnaの2つだけで統合を続行する。
 EXPERIMENT_DIR = DATASETS_DIR / "experiment"
 
 SPLITS = ["train", "valid", "test"]
@@ -51,19 +43,27 @@ def download_datasets():
     version2 = project2.version(1)
     version2.download("yolov8", location=str(DATASETS_DIR / "pradyumna"))
 
+    # データセット3: 自前撮影(334枚)
+    try:
+        project3 = rf.workspace("-kz8ad").project("atom-badminton-ai")
+        version3 = project3.version(1)
+        version3.download("yolov8", location=str(EXPERIMENT_DIR))
+    except Exception as e:
+        print(f"[警告] 自前撮影データセットをダウンロードできませんでした: {e}")
+
     print("ダウンロード完了")
 
     source_dirs = [DATASETS_DIR / "adwproj", DATASETS_DIR / "pradyumna"]
 
-    # 自前撮影データセットは既にダウンロード済みの前提。存在すれば統合対象に
-    # 加え、無ければ警告のみ表示して2データセットのままにする。
+    # ダウンロードに失敗しても、以前のダウンロード分が残っていれば統合対象に
+    # 加える。無ければ警告のみ表示して2データセットのままにする。
     if EXPERIMENT_DIR.exists():
         print(f"自前撮影データセットを検出しました: {EXPERIMENT_DIR}")
         source_dirs.append(EXPERIMENT_DIR)
     else:
         print(
             f"[警告] {EXPERIMENT_DIR} が見つかりません。"
-            "自前撮影データセットは統合されません(スクリプト冒頭のコメント参照)。"
+            "自前撮影データセットは統合されません。"
         )
 
     return source_dirs
