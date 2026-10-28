@@ -39,7 +39,7 @@ YOLOによる物体検出とカメラキャリブレーションを組み合わ�
 | ファイル | 説明 |
 |---|---|
 | `camera_calibration.yaml` | `calibrate_camera.py` の出力。カメラ行列(fx, fy, cx, cy)、歪み係数、校正時の画像解像度などを含む。`realtime_detect.py` がこれを読み込んで距離推定に使う |
-| `requirements.txt` | pipの依存パッケージ一覧(`pip freeze` 形式)。学習・推論に必要な主要パッケージ(torch, ultralytics, opencv-python など)に加え、`download_datasets.py` が使う `python-dotenv` と `roboflow`、およびそれらの依存パッケージも含む |
+| `requirements.txt` | pipの依存パッケージ一覧(`pip freeze` 形式)。学習・推論に必要な主要パッケージ(torch, ultralytics, opencv-python など)に加え、`download_datasets.py` が使う `python-dotenv` と `roboflow`、およびそれらの依存パッケージも含む。WSLとWindowsの両方で同じファイルを使えるよう、Linux専用(`triton`, `nvidia-*-cu12`)とWindows専用(`pygrabber`, `comtypes`)のパッケージには `sys_platform` の条件を付けている。CUDA版PyTorchの取得先(`--extra-index-url`)も先頭に書いてある |
 | `.env` | `ROBOFLOW_API_KEY` を保持する秘密情報ファイル。Git管理外のため、各自作成が必要 |
 | `.gitignore` | Git管理から除外するファイル・フォルダのルール |
 
@@ -260,12 +260,21 @@ venv_win\Scripts\Activate.ps1
 
 ### 3. ライブラリのインストール
 
-`requirements.txt` の PyTorch は CUDA 12.4 版(`torch==2.6.0+cu124`)で、通常の PyPI には
-置かれていません。PyTorch の配布元を追加してインストールします。
+**WSLとWindowsの両方を使う場合は、それぞれの仮想環境を有効にした状態で1回ずつ実行します**
+(`venv` と `venv_win` は別の環境なので、片方に入れたライブラリはもう片方では使えません)。
+カメラを使わない場合は WSL 側だけで十分です。
 
 ```bash
-pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cu124
+pip install -r requirements.txt
 ```
+
+`requirements.txt` は1つのファイルで両方の環境に対応しています。
+
+- PyTorch は CUDA 12.4 版(`torch==2.6.0+cu124`)で、通常の PyPI には置かれていないため、
+  ファイルの先頭で PyTorch の配布元(`--extra-index-url`)を指定している
+- Linux 専用のパッケージ(`triton`, `nvidia-*-cu12`)は WSL でだけ、カメラを名前で
+  自動選択するための Windows 専用のパッケージ(`pygrabber`, `comtypes`)は Windows でだけ
+  インストールされる
 
 ✅ **確認**:主要パッケージが読み込めて、GPUが認識されているか確認します。
 
