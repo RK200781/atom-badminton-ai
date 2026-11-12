@@ -22,7 +22,8 @@ YOLOによる物体検出とカメラキャリブレーションを組み合わ�
 
 | ファイル | 説明 |
 |---|---|
-| `calibrate_camera.py` | `images/calibration/` 内のチェッカーボード画像(内部コーナー9x6、1マス25mm)からカメラキャリブレーションを行い、カメラ行列(fx, fy, cx, cy)・歪み係数・再投影誤差を算出して `camera_calibration.yaml` に保存する |
+| `calibrate_camera.py` | `images/calibration/`(`--images-dir` で変更可)内のチェッカーボード画像(内部コーナー9x6、1マス25mm)からカメラキャリブレーションを行い、カメラ行列(fx, fy, cx, cy)・歪み係数・再投影誤差を算出して `camera_calibration.yaml` に保存する |
+| `capture_calibration_images.py` | 検出スクリプトと同じカメラ設定(1280×720・60fps、DirectShow、MJPG)でチェッカーボードを撮影し、`images/calibration_720p/` に保存する(スペースで保存、`q` で終了)。プレビュー上でボードの検出状況と撮影済みの位置を確認できる |
 | `train_yolo.py` | 事前学習済みの `yolov8n.pt` を読み込み、`datasets/merged/data.yaml` を使ってシャトルコック検出モデルを転移学習する(GPU使用、`--epochs`で指定可能・デフォルト50)。結果は `runs/<--nameで指定した名前>/`(デフォルト `shuttlecock_v2`)に保存される |
 | `predict_yolo.py` | 学習済みモデル(`runs/shuttlecock_v2/weights/best.pt`)で `datasets/merged/test/images` に対して推論し、検出結果画像を `runs/predict_test/` に保存する |
 | `realtime_detect.py` | `camera_calibration.yaml` の値と学習済みモデルを使い、Webカメラ映像からシャトルコックをリアルタイム検出して距離(X, Y, Z)を推定・表示する。さらに `trajectory_predictor.py` で数百ミリ秒先の軌道(`--floor-y-cm` 指定時は落下地点も)をリアルタイム予測し、映像に重ねて表示する。軌道は `trajectories/` に、予測結果は `trajectories/predictions/` にCSVとして保存される |
@@ -382,20 +383,40 @@ runs/shuttlecock_v2/weights/best.pt
 
 ### 7. カメラキャリブレーション
 
-> リポジトリに含まれる `camera_calibration.yaml` と同じカメラを使う場合は不要です。
+> リポジトリに含まれる `camera_calibration.yaml` は 3840×2160 で撮影した画像から作ったもので、
+> 現在の検出(1280×720)とは画角が合わず、Zが約1/3に出ることが分かっています。
+> 下の手順で 1280×720 のまま撮り直してください。
 
-`camera_calibration.yaml` は撮影に使ったカメラの機種・解像度に紐づいた値です。
-**別のカメラを使う場合は、必ず再キャリブレーションしてください。**
+`camera_calibration.yaml` は撮影に使ったカメラの機種・解像度・モードに紐づいた値です。
+**別のカメラを使う場合や、検出時の解像度を変えた場合は、必ず再キャリブレーションしてください。**
+解像度の比率でスケーリングする処理はありますが、カメラによっては解像度ごとに
+写る範囲(クロップ・ズーム)が変わるため、スケーリングでは正しい値になりません。
 
-1. 9x6の内部コーナー(1マス25mm)のチェッカーボードを、使用するカメラで複数枚(20枚前後推奨)撮影する
-2. 撮影した画像を `images/calibration/` に配置する
-3. 以下を実行する
+撮影は **Windows側(`venv_win`)で `capture_calibration_images.py` を使って**行います。
+`realtime_detect.py` / `realtime_pose_detect.py` と同じ設定(カメラ選択、DirectShow、MJPG、
+1280×720・60fps)でカメラを開くため、検出時と同じ映像で校正できます
+(Windowsのカメラアプリで撮ると別のモードになることがあるので使わない)。
+撮影場所はどこでもよいですが、Elgato Camera Hub のズーム・フォーカス設定は検出時と同じにしてください。
+
+1. 9x6の内部コーナー(1マス25mm)のチェッカーボードを用意する
+2. 以下を実行し、ボードが見つかる(`board: FOUND`)状態でスペースキーを押して20枚前後撮影する。
+   撮影済みの位置は水色の枠で表示されるので、画面の四隅まで埋まるように撮る。`q` で終了
+3. 撮影した画像でキャリブレーションする
 
 ```bash
-python calibrate_camera.py
+python capture_calibration_images.py                              # images/calibration_720p/ に保存
+python calibrate_camera.py --images-dir images/calibration_720p   # camera_calibration.yaml を上書き
 ```
 
-`camera_calibration.yaml` が新しい値で上書き保存されます。
+| オプション | デフォルト | 説明 |
+|---|---|---|
+| `capture_calibration_images.py --output-dir` | `images/calibration_720p` | 画像の保存先 |
+| `calibrate_camera.py --images-dir` | `images/calibration` | 読み込む画像のフォルダ |
+| `calibrate_camera.py --output` | `camera_calibration.yaml` | 結果の保存先 |
+
+`camera_calibration.yaml` が新しい値で上書き保存されます(以前の値はGitの履歴から戻せます)。
+`realtime_detect.py` の起動時に表示される「キャリブレーション値を読み込みました (解像度 1280x720)」の
+後に「スケーリングしました」が出なければ、検出と同じ解像度の値が使われています。
 
 > [!TIP]
 > きれいに校正するコツ:

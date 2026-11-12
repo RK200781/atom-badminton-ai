@@ -6,6 +6,8 @@
 images/calibration/ 内のチェッカーボード画像から、
 カメラ行列(fx, fy, cx, cy)と歪み係数を算出し、
 camera_calibration.yaml として保存する。
+--images-dir / --output で読み込むフォルダ・保存先を変更できる
+(capture_calibration_images.py で撮影した images/calibration_720p/ を使う場合など)。
 
 前提:
 - チェッカーボードの内部コーナー数: 9x6(横9個×縦6個)
@@ -13,6 +15,7 @@ camera_calibration.yaml として保存する。
 """
 
 from pathlib import Path
+import argparse
 import sys
 import datetime
 
@@ -52,24 +55,41 @@ def imread_unicode(path: Path):
         return None
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="カメラキャリブレーション")
+    parser.add_argument(
+        "--images-dir", type=Path, default=IMAGES_DIR,
+        help="チェッカーボード画像のフォルダ(デフォルト: images/calibration)",
+    )
+    parser.add_argument(
+        "--output", type=Path, default=OUTPUT_YAML,
+        help="結果の保存先YAML(デフォルト: camera_calibration.yaml)",
+    )
+    return parser.parse_args()
+
+
 def main():
-    if not IMAGES_DIR.exists():
-        print(f"エラー: 画像フォルダが見つかりません: {IMAGES_DIR}")
+    args = parse_args()
+    images_dir = args.images_dir
+    output_yaml = args.output
+
+    if not images_dir.exists():
+        print(f"エラー: 画像フォルダが見つかりません: {images_dir}")
         sys.exit(1)
 
     all_image_paths = sorted(
-        p for p in IMAGES_DIR.iterdir()
+        p for p in images_dir.iterdir()
         if p.suffix.lower() in IMAGE_EXTENSIONS
     )
 
     if not all_image_paths:
-        print(f"エラー: {IMAGES_DIR} に画像ファイル(jpg/png)が見つかりません。")
+        print(f"エラー: {images_dir} に画像ファイル(jpg/png)が見つかりません。")
         sys.exit(1)
 
     image_paths = [p for p in all_image_paths if p.name not in EXCLUDED_FILENAMES]
     excluded_present = [p.name for p in all_image_paths if p.name in EXCLUDED_FILENAMES]
 
-    print(f"対象画像フォルダ: {IMAGES_DIR}")
+    print(f"対象画像フォルダ: {images_dir}")
     print(f"画像ファイル数(全体): {len(all_image_paths)}")
     if excluded_present:
         print(f"手動除外した画像: {len(excluded_present)} 枚")
@@ -223,10 +243,10 @@ def main():
         },
     }
 
-    with open(OUTPUT_YAML, "w", encoding="utf-8") as f:
+    with open(output_yaml, "w", encoding="utf-8") as f:
         yaml.dump(result, f, allow_unicode=True, sort_keys=False)
 
-    print(f"\n結果を保存しました: {OUTPUT_YAML}")
+    print(f"\n結果を保存しました: {output_yaml}")
 
 
 if __name__ == "__main__":
