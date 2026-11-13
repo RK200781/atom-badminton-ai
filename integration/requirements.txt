@@ -1,0 +1,7 @@
+# 統合版(integration/)に必要なもの。リポジトリ直下の requirements.txt とは別。
+#   pip install -r integration/requirements.txt
+python-can>=4.3      # CubeMars モーター(USB-CAN、slcan)
+pyserial>=3.5        # Arduino、および python-can の slcan が使う
+opencv-python==5.0.0.93
+numpy==2.3.5
+pillow==12.3.0       # 画面に日本語を表示するため
