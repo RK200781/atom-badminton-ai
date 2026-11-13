@@ -157,3 +157,44 @@ class HandleKeyTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MainStartupFailureTest(unittest.TestCase):
+    """発射機に接続できないとき:カメラの処理は始めず、分かりやすいメッセージで終わる。"""
+
+    def test_connection_error_exits_cleanly_without_starting_camera(self):
+        import main
+        from unittest import mock as umock
+
+        class FakeWorker:
+            def __init__(self):
+                self.started = False
+                self.stopped = False
+
+            def start(self):
+                self.started = True
+
+            def stop(self):
+                self.stopped = True
+
+        class FailingLauncher:
+            def __init__(self):
+                self.shut_down = False
+
+            def start(self):
+                raise ConnectionError("Arduino のポート COM5 を開けませんでした(テスト)")
+
+            def shutdown(self):
+                self.shut_down = True
+
+        worker, launcher = FakeWorker(), FailingLauncher()
+        with umock.patch.object(main, "setup_logging", return_value=main.RecentMessages()), \
+                umock.patch.object(main, "build_camera", return_value=worker), \
+                umock.patch.object(main, "build_launcher", return_value=launcher), \
+                self.assertLogs("launcher.main", level="ERROR") as logs:
+            self.assertEqual(main.main([]), 1)
+        self.assertFalse(worker.started)
+        self.assertTrue(worker.stopped)
+        self.assertTrue(launcher.shut_down)
+        self.assertIn("COM5", logs.output[-1])
+        self.assertNotIn("Traceback", "\n".join(logs.output))

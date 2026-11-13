@@ -1,7 +1,20 @@
 # 統合版(integration/)に必要なもの。リポジトリ直下の requirements.txt とは別。
 #   pip install -r integration/requirements.txt
+#
+# GPU で YOLO を動かすには、CUDA 版の torch が必要。リポジトリ直下の requirements.txt と
+# README の手順で入れた環境なら、そのまま使える(この一覧で torch を入れ直すと CPU 版になることがある)。
+
+# 発射機
 python-can>=4.3      # CubeMars モーター(USB-CAN、slcan)
 pyserial>=3.5        # Arduino、および python-can の slcan が使う
+
+# 画面
 opencv-python==5.0.0.93
 numpy==2.3.5
 pillow==12.3.0       # 画面に日本語を表示するため
+
+# カメラ
+ultralytics==8.4.137                     # シャトルの検出(YOLO)
+mediapipe==1.0.1                         # 人の検出
+PyYAML==6.0.3                            # camera_calibration.yaml の読み込み
+pygrabber==0.2; sys_platform == "win32"  # カメラを名前で選ぶ(無くても動く)

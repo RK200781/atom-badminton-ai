@@ -99,8 +99,76 @@ ARDUINO_NO_SHUTTLE_TIMEOUT_SEC = 10.0
 SPEED_LABELS = {0: "停止", 1: "弱(20%)", 2: "中(50%)", 3: "強(100%)"}
 
 # ============================================================
+# カメラ(シャトル検出:realtime_detect.py、人の検出:realtime_pose_detect.py と同じ値)
+# ============================================================
+
+from pathlib import Path as _Path
+
+# リポジトリのルート。学習済みモデルやキャリブレーションのように、今後も更新されるデータは
+# コピーせず、元の場所を参照する(コードは integration/ の外から import しない)。
+REPO_DIR = _Path(__file__).resolve().parent.parent
+
+CALIBRATION_YAML = REPO_DIR / "camera_calibration.yaml"                     # calibrate_camera.py が作る
+YOLO_MODEL_PATH = REPO_DIR / "runs" / "shuttlecock_v2" / "weights" / "best.pt"  # train_yolo.py が作る
+POSE_MODEL_PATH = REPO_DIR / "weights" / "pose_landmarker_lite.task"       # 無ければ自動ダウンロード
+POSE_MODEL_URL = (
+    "https://storage.googleapis.com/mediapipe-models/pose_landmarker/"
+    "pose_landmarker_lite/float16/latest/pose_landmarker_lite.task"
+)
+
+# CSV の保存先。単品スクリプトと同じ場所・同じ形式にして、既存の分析ツールでそのまま読めるようにする
+# (どちらも Git の管理外)。
+SHUTTLE_CSV_DIR = REPO_DIR / "trajectories"         # shuttle_trajectory_<日時>.csv
+PERSON_CSV_DIR = REPO_DIR / "person_positions"      # person_position_<日時>.csv
+
+# カメラの選択と設定
+CAMERA_NAME_KEYWORD = "Elgato Facecam 4K"  # この名前を含むカメラを自動で選ぶ(Windows + pygrabber のとき)
+MAX_CAMERA_PROBE_INDEX = 5                 # 名前で選べないとき、0〜4 番を試す
+CAMERA_WIDTH = 1280
+CAMERA_HEIGHT = 720
+CAMERA_FPS = 60
+
+# シャトルの検出(YOLO)
+SHUTTLE_DIAMETER_CM = 6.35       # 見かけの大きさから距離 Z を出すための実際の直径
+YOLO_CONFIDENCE = 0.25
+
+# 人の検出(MediaPipe Pose)
+POSE_INFERENCE_INTERVAL = 2      # 何フレームに1回推論するか
+POSE_MIN_DETECTION_CONFIDENCE = 0.5
+POSE_MIN_TRACKING_CONFIDENCE = 0.5
+ANKLE_VISIBILITY_THRESHOLD = 0.5
+ANKLE_PRESENCE_THRESHOLD = 0.5
+SHOULDER_VISIBILITY_THRESHOLD = 0.5
+SHOULDER_PRESENCE_THRESHOLD = 0.5
+
+# 足首が見えないときは、肩の中点がこの高さ(床から)にあると仮定して立ち位置を出す(仮の値。身長で変わる)
+SHOULDER_HEIGHT_CM = 140.0
+
+# カメラの設置
+#   高さ:床から約 20cm(2026-11-13 にユーザーが測った値)。
+#   向き:約 19° 上向き。2026-11-13 の録画(detection_test/recordings/rec_20261113_191721_2m.mp4)で、
+#   垂直な柱が上に行くほど寄って見える度合い(消失点)から求めた値(7 フレームで 19.1〜22.1°、中央値 19.2°)。
+#   最初に聞いた「35°」は、レンズの向き(光軸)ではない角度を測っていたらしい。
+#   この向きだと画面の一番下は水平より約 6° 下を見ているので、カメラから約 1.1m 以上離れた人の足首が映り、
+#   足首から立ち位置を出せる。それより近い、または足首を見失ったときは肩の高さから出す。
+CAMERA_MOUNT_HEIGHT_CM = 20.0
+CAMERA_TILT_DEG = -19.0          # 水平から下向きを正とする角度。上向き 19° なので −19
+
+# 発射口の位置(カメラから見て。2026-11-13 にユーザーが測った値)。左右のずれは無く、発射機の正面(yaw 0°)と
+# カメラの正面は同じ向き。自動で狙う版で使う予定で、今は未使用。
+LAUNCHER_MUZZLE_BEHIND_CAMERA_CM = 25.0   # カメラより後ろ(水平方向)
+LAUNCHER_MUZZLE_ABOVE_CAMERA_CM = 115.0   # カメラより上(床からは約 135cm)
+
+# ============================================================
 # 画面
 # ============================================================
 
 WINDOW_NAME = "Launcher Control"
+CAMERA_WINDOW_NAME = "Camera"
+
+# ウィンドウの位置と大きさ [px]。2つが重なって片方が隠れないよう、横に並べて開く。
+# 操作画面は幅 960px なので、カメラ映像はその右隣に置く。画面に収まらなければ値を変える。
+WINDOW_POSITION = (0, 0)
+CAMERA_WINDOW_POSITION = (970, 0)
+CAMERA_WINDOW_SIZE = (854, 480)   # 開いたときの大きさ(16:9)。マウスで変えられる
 UI_REFRESH_MS = 30            # cv2.waitKey の待ち時間

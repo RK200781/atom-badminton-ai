@@ -105,7 +105,15 @@ class PythonCanPort:
                  bitrate=config.CAN_BITRATE):
         import can  # 実機のときだけ必要なので、ここで読み込む
         self._can = can
-        self._bus = can.Bus(interface=interface, channel=channel, bitrate=bitrate)
+        try:
+            self._bus = can.Bus(interface=interface, channel=channel, bitrate=bitrate)
+        except Exception as e:
+            raise ConnectionError(
+                f"USB-CAN({channel})を開けませんでした({type(e).__name__}: {e})。"
+                "USB がつながっているか、デバイスマネージャーの「ポート(COM と LPT)」で番号を確認し、"
+                "違っていれば --can-channel COM番号@115200 で指定してください。"
+                "ノートブックなど他のプログラムがポートを使っていないかも確認してください。"
+            ) from e
         log.info("CAN を開きました: %s %s %d bps", interface, channel, bitrate)
 
     def send(self, arbitration_id: int, data: bytes) -> None:

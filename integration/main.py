@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-発射機の統合版:起動、キー入力、画面表示。
+発射機の統合版(手動操作):起動、キー入力、画面表示。
 
-    python main.py            実機(CAN: COM6、Arduino: COM5)
-    python main.py --mock     実機なし(偽物のモーターと Arduino)
+    python main.py                     実機(CAN: COM6、Arduino: COM5)+カメラ
+    python main.py --mock              偽物のモーターと Arduino +カメラ
+    python main.py --no-camera         カメラを使わない
+    python main.py --camera-file X.mp4 カメラの代わりに動画ファイルを使う
 
-キーは OpenCV のウィンドウが前面にあるときだけ受け付ける(ノートブックの pynput と違い、
+画面は2つ:発射機の操作画面(Launcher Control)と、カメラ映像(Camera)。
+カメラではシャトル(YOLO)と人(MediaPipe)を検出して表示・記録するが、発射は自動では行わない。
+カメラが使えなくても、発射機の操作はそのまま続けられる。
+
+キーは OpenCV のウィンドウ(どちらでもよい)が前面にあるときだけ受け付ける(ノートブックの pynput と違い、
 他のウィンドウで打った文字には反応しない)。
 
     1        発射
@@ -34,6 +40,7 @@ import config
 from feeder import FIRE_CONFIRMED, FIRE_PENDING, FIRE_UNCONFIRMED, Feeder, open_serial
 from launcher import Launcher, LauncherStatus
 from motors import MotorController, PythonCanPort
+from camera import CameraError
 
 log = logging.getLogger("launcher.main")
 
@@ -137,7 +144,7 @@ YELLOW = (60, 210, 230)
 
 
 class Screen:
-    WIDTH, HEIGHT = 960, 640
+    WIDTH, HEIGHT = 960, 760
     FONT_SIZE = 20
     LINE = 28
 
@@ -189,8 +196,9 @@ class Screen:
         """画面の幅に収まらない行を折り返す(2行目以降は字下げ)。"""
         return [(piece, color) for text, color in lines for piece in self._wrap_text(text)]
 
-    def render(self, status: LauncherStatus, messages, mock: bool) -> np.ndarray:
-        lines = self._layout(status, messages, mock)
+    def render(self, status: LauncherStatus, camera, messages, mock: bool) -> np.ndarray:
+        """camera: CameraStatus、またはカメラを使っていない理由の文字列。"""
+        lines = self._layout(status, camera, messages, mock)
         img = np.full((self.HEIGHT, self.WIDTH, 3), 30, np.uint8)
         if self._font is None:
             for i, (text, color) in enumerate(lines):
@@ -205,13 +213,13 @@ class Screen:
             draw.text((self.MARGIN, 10 + i * self.LINE), text, font=self._font, fill=color)
         return np.asarray(pil)
 
-    def _layout(self, status: LauncherStatus, messages, mock: bool):
+    def _layout(self, status: LauncherStatus, camera, messages, mock: bool):
         """状態 → メッセージ → キー操作の順に並べる。入りきらないときは古いメッセージから省く。"""
         footer = self._wrap([
             ("1:発射  2/3/4:強さ 弱/中/強  5:ローラー停止  W/S:pitch -/+  A/D:yaw -/+", GRAY),
             ("スペース:停止  R:モーター再開  Q:終了", GRAY),
         ])
-        body = self._wrap(self._build_lines(status, mock))
+        body = self._wrap(self._build_lines(status, mock) + self._camera_lines(camera))
         max_lines = (self.HEIGHT - 20) // self.LINE
         room = max_lines - len(footer) - len(body) - 2
         message_lines = []
@@ -249,8 +257,8 @@ class Screen:
             lines.append((f"Arduino: 受信エラー  {f.error}", RED))
         lines.append((f"ローラーの強さ: {f.speed}  {config.SPEED_LABELS.get(f.speed, '?')}",
                        GREEN if f.speed else WHITE))
-        shuttle_text = {True: ("シャトル: 検知あり", GREEN), False: ("シャトル: 検知なし", WHITE),
-                        None: ("シャトル: 不明(Arduino から届いていない)", RED)}[s.shuttle]
+        shuttle_text = {True: ("装填部のシャトル: 検知あり", GREEN), False: ("装填部のシャトル: 検知なし", WHITE),
+                        None: ("装填部のシャトル: 不明(Arduino から届いていない)", RED)}[s.shuttle]
         lines.append(shuttle_text)
 
         if s.fire_reasons:
@@ -264,6 +272,33 @@ class Screen:
                        FIRE_UNCONFIRMED: ("直前の発射: 確認できず", RED)}.get(f.fire_result)
         if result_text:
             lines.append(result_text)
+        return lines
+
+    @staticmethod
+    def _camera_lines(camera):
+        from camera_worker import STATE_RUNNING
+        lines = [("", WHITE)]
+        if isinstance(camera, str):
+            lines.append((f"カメラ: {camera}", GRAY if camera.startswith("使わない") else RED))
+            return lines
+        if camera.state != STATE_RUNNING:
+            lines.append((f"カメラ: 停止  {camera.message or ''}", RED))
+        elif camera.stage is not None:
+            # 最初のフレームを処理し終えるまで。長く続くなら、その段階で止まっている
+            color = RED if camera.stage_elapsed > 30 else YELLOW
+            lines.append((f"カメラ: 準備中  {camera.stage}({camera.stage_elapsed:.0f} 秒)", color))
+        else:
+            lines.append((f"カメラ: 動作中  {camera.fps:.1f} fps", GREEN))
+        sh = camera.shuttle
+        lines.append((f"  映像のシャトル: X={sh.X:+.0f} Y={sh.Y:+.0f} Z={sh.Z:.0f} cm(信頼度 {sh.confidence:.2f})"
+                      if sh else "  映像のシャトル: 未検出", GREEN if sh else WHITE))
+        p = camera.person
+        if p:
+            source = "足首から" if p.method == "ankle" else f"肩の高さ {config.SHOULDER_HEIGHT_CM:.0f}cm と仮定"
+            lines.append((f"  人の立ち位置: X={p.X:+.0f} Z={p.Z:.0f} cm({source})", GREEN))
+        else:
+            lines.append((f"  人の立ち位置: {camera.person_note or '未検出'}", WHITE))
+        lines.append((f"  記録: シャトル {camera.shuttle_rows} 件 / 立ち位置 {camera.person_rows} 件", GRAY))
         return lines
 
 
@@ -280,6 +315,9 @@ def parse_args(argv=None):
                         help=f"USB-CAN の channel(既定: {config.CAN_CHANNEL})")
     parser.add_argument("--mock-can-fail-after", type=float, default=None, metavar="SEC",
                         help="--mock のとき、この秒数後にモーターの通信エラーを起こす(R キーの再開を試す用)")
+    parser.add_argument("--no-camera", action="store_true", help="カメラを使わない(発射機の操作だけ)")
+    parser.add_argument("--camera-file", type=Path, default=None, metavar="VIDEO",
+                        help="カメラの代わりに動画ファイルを使う(カメラなしで確認する用)")
     return parser.parse_args(argv)
 
 
@@ -294,32 +332,102 @@ def build_launcher(args) -> Launcher:
     return Launcher(motors, feeder)
 
 
+# 最初の映像が届くまで Camera ウィンドウに出す画像
+WAITING_FRAME = np.full((config.CAMERA_HEIGHT, config.CAMERA_WIDTH, 3), 40, np.uint8)
+cv2.putText(WAITING_FRAME, "Waiting for the first camera frame... (see Launcher Control)",
+            (40, config.CAMERA_HEIGHT // 2), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (220, 220, 220), 2)
+
+
+def open_camera_window() -> None:
+    """カメラ映像のウィンドウを、操作画面と重ならないよう右隣に開く(大きさはマウスで変えられる)。"""
+    cv2.namedWindow(config.CAMERA_WINDOW_NAME, cv2.WINDOW_NORMAL)
+    cv2.resizeWindow(config.CAMERA_WINDOW_NAME, *config.CAMERA_WINDOW_SIZE)
+    cv2.moveWindow(config.CAMERA_WINDOW_NAME, *config.CAMERA_WINDOW_POSITION)
+
+
+def build_camera(args):
+    """カメラの処理を準備して始める。起動できなければ CameraError。"""
+    import camera as cam
+    from camera_worker import CameraWorker, make_recorders
+    from vision import PoseDetector, ShuttleDetector
+
+    intrinsics = cam.load_calibration()
+    shuttle_detector = ShuttleDetector()
+    pose_detector = PoseDetector()
+    try:
+        if args.camera_file is not None:
+            cap, width, height = cam.open_video_file(args.camera_file)
+        else:
+            cap, width, height = cam.open_camera(cam.resolve_camera_index())
+    except Exception:
+        pose_detector.close()
+        raise
+    shuttle_rec, person_rec = make_recorders()
+    # スレッドはまだ始めない(発射機の準備が終わってから main() で始める)
+    return CameraWorker(cap, width, height, intrinsics, shuttle_detector, pose_detector,
+                        shuttle_rec, person_rec, is_file=args.camera_file is not None)
+
+
 def main(argv=None) -> int:
     args = parse_args(argv)
     recent = setup_logging()
     log.info("起動します(%s)。", "MOCK" if args.mock else f"実機 CAN={args.can_channel} Arduino={args.serial_port}")
 
     launcher = build_launcher(args)
+    camera_worker = None
+    camera_note = "使わない(--no-camera)"
+    camera_window_open = False
     exit_code = 0
     try:
+        # カメラは先に準備する(カメラが複数あるとき、コンソールで番号を選ぶことがあるため)。
+        # カメラが使えなくても、発射機の操作は続ける。
+        if not args.no_camera:
+            try:
+                camera_worker = build_camera(args)
+            except Exception as e:  # CameraError 以外(OpenCV の内部エラーなど)でも発射機は止めない
+                if not isinstance(e, CameraError):
+                    e = f"{type(e).__name__}: {e}"
+                camera_note = f"起動できませんでした: {e}"
+                log.error("カメラを起動できませんでした: %s(発射機の操作は続けられます)", e)
         launcher.start()
+        if camera_worker is not None:
+            camera_worker.start()  # 発射機の準備が終わってから始める(失敗したときに止める手間を省く)
+            open_camera_window()   # 映像が届く前から開いておく(届くまでは「待っています」と表示)
+            camera_window_open = True
         screen = Screen()
         cv2.namedWindow(config.WINDOW_NAME, cv2.WINDOW_AUTOSIZE)
+        cv2.moveWindow(config.WINDOW_NAME, *config.WINDOW_POSITION)
         while True:
-            cv2.imshow(config.WINDOW_NAME, screen.render(launcher.status(), recent.items(), args.mock))
+            camera_status = camera_worker.status() if camera_worker is not None else camera_note
+            cv2.imshow(config.WINDOW_NAME, screen.render(launcher.status(), camera_status, recent.items(), args.mock))
+            if camera_worker is not None:
+                frame = camera_worker.latest_frame()
+                cv2.imshow(config.CAMERA_WINDOW_NAME, frame if frame is not None else WAITING_FRAME)
             key = cv2.waitKey(config.UI_REFRESH_MS)
             if handle_key(launcher, key) == QUIT:
                 break
             if cv2.getWindowProperty(config.WINDOW_NAME, cv2.WND_PROP_VISIBLE) < 1:
-                log.info("ウィンドウが閉じられたので終了します。")
+                log.info("操作画面が閉じられたので終了します。")
+                break
+            if camera_window_open and cv2.getWindowProperty(config.CAMERA_WINDOW_NAME, cv2.WND_PROP_VISIBLE) < 1:
+                log.info("カメラの画面が閉じられたので終了します。")
                 break
     except KeyboardInterrupt:
         log.info("Ctrl+C が押されたので終了します。")
+    except ConnectionError as e:  # COM ポートが見つからないなど。対処法をそのまま出す
+        log.error("発射機に接続できなかったので終了します: %s", e)
+        exit_code = 1
     except Exception:
         log.exception("エラーで終了します。")
         exit_code = 1
     finally:
+        # 発射機の終了処理を先に行う(安全に関わるため)。カメラはその後。
         launcher.shutdown()
+        if camera_worker is not None:
+            try:
+                camera_worker.stop()
+            except Exception as e:
+                log.error("カメラの終了処理でエラー: %s", e)
         cv2.destroyAllWindows()
     return exit_code
 

@@ -86,7 +86,15 @@ def fire_block_reasons(snap: FeederSnapshot, now: float, hold_running: bool) -> 
 
 def open_serial(port: str = config.SERIAL_PORT, baud: int = config.SERIAL_BAUD):
     import serial  # 実機のときだけ必要なので、ここで読み込む
-    ser = serial.Serial(port, baud, timeout=config.SERIAL_TIMEOUT_SEC)
+    try:
+        ser = serial.Serial(port, baud, timeout=config.SERIAL_TIMEOUT_SEC)
+    except serial.SerialException as e:
+        raise ConnectionError(
+            f"Arduino のポート {port} を開けませんでした({e})。"
+            "USB がつながっているか、デバイスマネージャーの「ポート(COM と LPT)」で番号を確認し、"
+            "違っていれば --serial-port COM番号 で指定してください。"
+            "ノートブックなど他のプログラムがポートを使っていないかも確認してください。"
+        ) from e
     log.info("Arduino のポートを開きました: %s %d bps", port, baud)
     return ser
 
