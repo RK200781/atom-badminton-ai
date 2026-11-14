@@ -3,8 +3,10 @@
 発射ごとの記録(自動版)。
 
 発射するたびに1行を作り、ターミナルで入力した結果(feedback.py)をその行に書き足す。
-全セッション分を shots/shots.csv の1つのファイルにまとめ、学習(aiming.py)はこのファイルから行う。
-変更のたびにファイル全体を書き直す(件数は多くても数千なので十分速い)。
+記録はセッション(起動)ごとに shots/shots_<セッション>.csv に分け、学習(aiming.py)はフォルダの中の
+すべてのファイルから行う。Git で共有して、どの PC でも同じ学習の状態を再現するため
+(ファイルが分かれているので、複数の PC で記録しても衝突しない)。
+変更のたびに、このセッションのファイル全体を書き直す(1セッション数百件程度なので十分速い)。
 """
 
 import csv
@@ -73,6 +75,7 @@ class Shot:
         return reference + math.degrees(math.atan2(self.lateral_cm, distance))
 
 
+FILE_PREFIX = "shots_"
 _FIELDS = [f.name for f in fields(Shot)]
 _TYPES = {f.name: str(f.type) for f in fields(Shot)}   # 例 "<class 'int'>"、"typing.Optional[float]"
 
@@ -101,25 +104,39 @@ def _from_text(name: str, text: str):
 
 
 class ShotLog:
-    def __init__(self, path: Path):
-        self.path = Path(path)
-        self._lock = threading.Lock()
-        self._shots: List[Shot] = []
-        self._undo_stack = []   # (shot_id, 入力前の値)
-        if self.path.exists():
-            self._load()
+    """発射の記録。セッション(起動)ごとに shots_<セッション>.csv を1つ作り、そこにだけ書く。
 
-    def _load(self) -> None:
-        with open(self.path, newline="", encoding="utf-8") as f:
-            for row in csv.DictReader(f):
-                try:
-                    self._shots.append(Shot(**{k: _from_text(k, row.get(k, "")) for k in _FIELDS}))
-                except Exception as e:
-                    log.warning("発射の記録の1行を読めませんでした(飛ばします): %s", e)
-        log.info("発射の記録を読み込みました: %d 件(%s)", len(self._shots), self.path)
+    学習には、フォルダの中のすべての shots_*.csv(他の PC や前のセッションの分も)を使う。
+    ファイルをセッションごとに分けているので、複数の PC の記録を Git で共有しても衝突しない。
+    発射の番号(shot_id)はセッションの中での通し番号で、「#3」はこのセッションの 3 番を指す。
+    """
+
+    def __init__(self, directory: Path, session: str):
+        self.directory = Path(directory)
+        self.session = session
+        self.path = self.directory / f"{FILE_PREFIX}{session}.csv"
+        self._lock = threading.Lock()
+        self._past: List[Shot] = []   # 他のセッションの記録(読むだけ)
+        self._shots: List[Shot] = []  # このセッションの記録
+        self._undo_stack = []         # (発射, 入力前の値)
+        self._load_past()
+
+    def _load_past(self) -> None:
+        files = sorted(p for p in self.directory.glob(f"{FILE_PREFIX}*.csv") if p != self.path)
+        for path in files:
+            try:
+                with open(path, newline="", encoding="utf-8") as f:
+                    for row in csv.DictReader(f):
+                        try:
+                            self._past.append(Shot(**{k: _from_text(k, row.get(k, "")) for k in _FIELDS}))
+                        except Exception as e:
+                            log.warning("%s の1行を読めませんでした(飛ばします): %s", path.name, e)
+            except OSError as e:
+                log.warning("%s を読めませんでした(飛ばします): %s", path.name, e)
+        log.info("これまでの発射の記録を読み込みました: %d 件(%d ファイル、%s)", len(self._past), len(files), self.directory)
 
     def _save(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.directory.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_suffix(".tmp")
         with open(tmp, "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
@@ -140,11 +157,16 @@ class ShotLog:
             self._save()
 
     def all(self) -> List[Shot]:
+        """これまでの全セッション(古い順)+このセッションの記録。学習に使う。"""
+        with self._lock:
+            return self._past + self._shots
+
+    def session_shots(self) -> List[Shot]:
         with self._lock:
             return list(self._shots)
 
     def get(self, shot_id: Optional[int]) -> Optional[Shot]:
-        """番号の発射。None なら一番新しい発射。"""
+        """このセッションの番号の発射。None なら一番新しい発射。"""
         with self._lock:
             if not self._shots:
                 return None
@@ -157,7 +179,7 @@ class ShotLog:
         with self._lock:
             before = {k: getattr(shot, k) for k in
                       ("feedback_text", "distance_error_cm", "landing_distance_cm", "lateral_cm")}
-            self._undo_stack.append((shot.shot_id, before))
+            self._undo_stack.append((shot, before))
             shot.feedback_text = f"{shot.feedback_text} / {fb.text}" if shot.feedback_text else fb.text
             if fb.landing_distance_cm is not None:
                 shot.landing_distance_cm = fb.landing_distance_cm
@@ -174,11 +196,8 @@ class ShotLog:
         with self._lock:
             if not self._undo_stack:
                 return None
-            shot_id, before = self._undo_stack.pop()
-            shot = next((s for s in self._shots if s.shot_id == shot_id), None)
-            if shot is None:
-                return None
+            shot, before = self._undo_stack.pop()
             for k, v in before.items():
                 setattr(shot, k, v)
             self._save()
-            return shot_id
+            return shot.shot_id

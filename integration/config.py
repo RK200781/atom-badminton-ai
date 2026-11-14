@@ -208,7 +208,8 @@ AUTO_FIRE_STABLE_CM = 30.0      # 「止まっている」とみなす立ち位�
 AUTO_FIRE_INTERVAL_SEC = 5.0    # 自動発射の間隔(前の発射からこの時間は撃たない)
 
 # ---- 記録(shots.py、session_video.py) ----
-# 発射ごとの記録(CSV)と、セッションの録画。人が映る・人の立ち位置を含むので Git の管理外(.gitignore の shots/)。
+# 発射の記録は、セッション(起動)ごとに shots_<日時>_<4桁>.csv を作る。学習はこのフォルダのすべての
+# shots_*.csv から行う。**記録は Git で共有する**(別の PC でも同じ学習の状態を再現するため)。
+# 録画(session_*.mp4、*_frames.csv)は人が映り容量も大きいので Git の管理外。
 SHOTS_DIR = _Path(__file__).resolve().parent / "shots"
-SHOTS_CSV = SHOTS_DIR / "shots.csv"       # 全セッション分を1つのファイルに追記する。学習はこのファイルから行う
 SESSION_VIDEO_FPS = 30.0                  # 録画ファイルに書く fps(実際の間隔は *_frames.csv に記録する)

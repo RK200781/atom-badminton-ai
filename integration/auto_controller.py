@@ -48,12 +48,12 @@ class AutoStatus:
 
 
 class AutoController:
-    def __init__(self, launcher, shot_log: ShotLog, model: Optional[AimModel] = None, session: Optional[str] = None,
-                 video=None, clock=time.monotonic):
+    def __init__(self, launcher, shot_log: ShotLog, model: Optional[AimModel] = None, video=None,
+                 clock=time.monotonic):
         self.launcher = launcher
         self.shot_log = shot_log
         self.model = model or AimModel()
-        self.session = session or datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.session = shot_log.session
         self.video = video
         self._clock = clock
         self.aim_enabled = False
@@ -167,7 +167,7 @@ class AutoController:
 
     def status(self, now=None, settled=None, reasons=None) -> AutoStatus:
         now = self._clock() if now is None else now
-        shots = [s for s in self.shot_log.all() if s.session == self.session]
+        shots = self.shot_log.session_shots()
         return AutoStatus(
             aim_enabled=self.aim_enabled,
             fire_enabled=self.fire_enabled,

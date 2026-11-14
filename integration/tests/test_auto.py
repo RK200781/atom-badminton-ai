@@ -127,30 +127,53 @@ def make_shot(shot_id=1, speed=2, pitch=-10.0, yaw=0.0, person_distance=400.0, p
 class ShotLogTest(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.TemporaryDirectory()
-        self.path = Path(self.dir.name) / "shots.csv"
+        self.path = Path(self.dir.name)
 
     def tearDown(self):
         self.dir.cleanup()
 
     def test_roundtrip_and_feedback(self):
-        log = ShotLog(self.path)
+        log = ShotLog(self.path, "a")
         self.assertEqual(log.next_id(), 1)
         log.add(make_shot(1, person_X_cm=12.5, person_method="ankle", video="v.mp4", video_frame=10))
         log.add(make_shot(2, person_distance=None, person_yaw=None))
         log.apply_feedback(log.get(1), parse_feedback("1m足りない"))
         log.apply_feedback(log.get(1), parse_feedback("右に20cm"))
-        again = ShotLog(self.path)
-        s1, s2 = again.get(1), again.get(2)
+        self.assertTrue((self.path / "shots_a.csv").exists())
+        later = ShotLog(self.path, "b")   # 次のセッション:前のセッションの記録は学習用に読むだけ
+        s1, s2 = later.all()
         self.assertEqual(s1.distance_error_cm, -100.0)
         self.assertEqual(s1.lateral_cm, 20.0)
         self.assertEqual(s1.feedback_text, "1m足りない / 右に20cm")
         self.assertEqual((s1.person_X_cm, s1.person_method, s1.video_frame, s1.auto_aim), (12.5, "ankle", 10, True))
         self.assertIsNone(s2.person_distance_cm)
-        self.assertEqual(again.next_id(), 3)
-        self.assertIs(again.get(None), s2)
+        # 番号はセッションごと。「#1」や「直前」は、このセッションの発射だけを指す
+        self.assertEqual(later.next_id(), 1)
+        self.assertIsNone(later.get(None))
+        self.assertIsNone(later.get(1))
+        self.assertEqual(later.session_shots(), [])
+
+    def test_sessions_from_other_pcs_are_combined_and_never_rewritten(self):
+        for name in ("x", "y"):
+            log = ShotLog(self.path, name)
+            log.add(make_shot(1))
+            log.apply_feedback(log.get(1), parse_feedback("飛距離4m"))
+        before = {p.name: p.read_bytes() for p in self.path.glob("*.csv")}
+        now = ShotLog(self.path, "z")
+        self.assertEqual(len(now.all()), 2)
+        now.add(make_shot(1))
+        self.assertEqual(len(now.all()), 3)
+        for name, data in before.items():   # 他のセッションのファイルは書き換えない
+            self.assertEqual((self.path / name).read_bytes(), data)
+        self.assertEqual(sorted(p.name for p in self.path.glob("*.csv")),
+                         ["shots_x.csv", "shots_y.csv", "shots_z.csv"])
+
+    def test_no_file_until_first_shot(self):
+        ShotLog(self.path, "empty")
+        self.assertEqual(list(self.path.glob("*.csv")), [])
 
     def test_undo(self):
-        log = ShotLog(self.path)
+        log = ShotLog(self.path, "a")
         log.add(make_shot(1))
         log.apply_feedback(log.get(1), parse_feedback("1m足りない"))
         log.apply_feedback(log.get(1), parse_feedback("2m超えた"))
@@ -284,10 +307,10 @@ class FakeVideo:
 class AutoControllerTest(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.TemporaryDirectory()
-        self.log = ShotLog(Path(self.dir.name) / "shots.csv")
+        self.log = ShotLog(Path(self.dir.name), "s1")
         self.clock = FakeClock()
         self.launcher = FakeLauncher()
-        self.ctl = AutoController(self.launcher, self.log, session="s1", video=FakeVideo(), clock=self.clock)
+        self.ctl = AutoController(self.launcher, self.log, video=FakeVideo(), clock=self.clock)
         self.ts = 0
 
     def tearDown(self):
@@ -387,7 +410,7 @@ class AutoControllerTest(unittest.TestCase):
         self.ctl.fire("key")
         self.ctl.handle_line("2m超えた")
         learned = self.ctl.model.state.speeds_ms[2]
-        other = AutoController(FakeLauncher(), ShotLog(self.log.path), session="s2", clock=self.clock)
+        other = AutoController(FakeLauncher(), ShotLog(Path(self.dir.name), "s2"), clock=self.clock)
         self.assertAlmostEqual(other.model.state.speeds_ms[2], learned, delta=0.01)
 
     def test_toggle_fire_requires_aim(self):

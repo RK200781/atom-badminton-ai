@@ -14,13 +14,14 @@
 W/A/S/D を押すと自動狙いは切れる(手で合わせたいとき)。スペース(停止)で自動狙い・自動発射とも切れる。
 
 発射の結果は、このプログラムを起動した**ターミナル**に打って Enter(例:「1m足りない」「右に30cm」)。
-「help」で入力の例が出る。記録は shots/shots.csv、録画は shots/session_<日時>.mp4。
+「help」で入力の例が出る。記録は shots/shots_<セッション>.csv(Git で共有する)、録画は shots/session_<セッション>.mp4。
 """
 
 import argparse
 import datetime
 import logging
 import queue
+import secrets
 import sys
 import threading
 from pathlib import Path
@@ -179,8 +180,8 @@ def parse_args(argv=None):
     parser.add_argument("--camera-file", type=Path, default=None, metavar="VIDEO",
                         help="カメラの代わりに動画ファイルを使う")
     parser.add_argument("--no-record", action="store_true", help="録画しない")
-    parser.add_argument("--shots-csv", type=Path, default=config.SHOTS_CSV,
-                        help=f"発射の記録(学習に使う)。既定: {config.SHOTS_CSV}")
+    parser.add_argument("--shots-dir", type=Path, default=config.SHOTS_DIR,
+                        help=f"発射の記録と録画のフォルダ(学習はここの shots_*.csv すべてから)。既定: {config.SHOTS_DIR}")
     args = parser.parse_args(argv)
     args.no_camera = False   # 自動版はカメラが前提
     return args
@@ -191,11 +192,12 @@ def main(argv=None) -> int:
     recent = manual.setup_logging()
     log.info("自動版を起動します(%s)。", "MOCK" if args.mock else f"実機 CAN={args.can_channel} Arduino={args.serial_port}")
 
-    session = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    shot_log = ShotLog(args.shots_csv)
-    video = None if args.no_record else SessionVideo(args.shots_csv.parent, session)
+    # 複数の PC で同じ秒に起動しても重ならないよう、日時に乱数 4 桁を付ける
+    session = f"{datetime.datetime.now():%Y%m%d_%H%M%S}_{secrets.token_hex(2)}"
+    shot_log = ShotLog(args.shots_dir, session)
+    video = None if args.no_record else SessionVideo(args.shots_dir, session)
     launcher = manual.build_launcher(args)
-    controller = AutoController(launcher, shot_log, session=session, video=video)
+    controller = AutoController(launcher, shot_log, video=video)
     console = ConsoleInput()
 
     camera_worker = None
@@ -261,8 +263,10 @@ def main(argv=None) -> int:
             except Exception as e:
                 log.error("録画の終了処理でエラー: %s", e)
         cv2.destroyAllWindows()
-        n = len([s for s in shot_log.all() if s.session == session])
-        log.info("このセッションの発射: %d 回(記録: %s)", n, shot_log.path)
+        n = len(shot_log.session_shots())
+        if n:
+            log.info("このセッションの発射: %d 回(記録: %s)", n, shot_log.path)
+            log.info("記録を共有するには: git add integration/shots → git status で shots_*.csv だけか確認 → commit → push")
     return exit_code
 
 
