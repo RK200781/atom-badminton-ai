@@ -215,10 +215,7 @@ class Screen:
 
     def _layout(self, status: LauncherStatus, camera, messages, mock: bool):
         """状態 → メッセージ → キー操作の順に並べる。入りきらないときは古いメッセージから省く。"""
-        footer = self._wrap([
-            ("1:発射  2/3/4:強さ 弱/中/強  5:ローラー停止  W/S:pitch -/+  A/D:yaw -/+", GRAY),
-            ("スペース:停止  R:モーター再開  Q:終了", GRAY),
-        ])
+        footer = self._wrap(self._footer_lines())
         body = self._wrap(self._build_lines(status, mock) + self._camera_lines(camera))
         max_lines = (self.HEIGHT - 20) // self.LINE
         room = max_lines - len(footer) - len(body) - 2
@@ -233,6 +230,12 @@ class Screen:
         lines = lines[:max_lines - len(footer)]
         lines += [("", WHITE)] * (max_lines - len(footer) - len(lines))
         return lines + footer
+
+    def _footer_lines(self):
+        return [
+            ("1:発射  2/3/4:強さ 弱/中/強  5:ローラー停止  W/S:pitch -/+  A/D:yaw -/+", GRAY),
+            ("スペース:停止  R:モーター再開  Q:終了", GRAY),
+        ]
 
     @staticmethod
     def _angle(value):
@@ -345,8 +348,11 @@ def open_camera_window() -> None:
     cv2.moveWindow(config.CAMERA_WINDOW_NAME, *config.CAMERA_WINDOW_POSITION)
 
 
-def build_camera(args):
-    """カメラの処理を準備して始める。起動できなければ CameraError。"""
+def build_camera(args, on_raw_frame=None):
+    """カメラの処理を準備する。起動できなければ CameraError。
+
+    on_raw_frame: 何も描いていないフレームを受け取る関数(自動版の録画用。手動版では使わない)。
+    """
     import camera as cam
     from camera_worker import CameraWorker, make_recorders
     from vision import PoseDetector, ShuttleDetector
@@ -365,7 +371,7 @@ def build_camera(args):
     shuttle_rec, person_rec = make_recorders()
     # スレッドはまだ始めない(発射機の準備が終わってから main() で始める)
     return CameraWorker(cap, width, height, intrinsics, shuttle_detector, pose_detector,
-                        shuttle_rec, person_rec, is_file=args.camera_file is not None)
+                        shuttle_rec, person_rec, is_file=args.camera_file is not None, on_raw_frame=on_raw_frame)
 
 
 def main(argv=None) -> int:

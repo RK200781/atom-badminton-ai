@@ -62,7 +62,9 @@ class CameraWorker:
     def __init__(self, capture, width: int, height: int, intrinsics: Intrinsics,
                  shuttle_detector=None, pose_detector=None,
                  shuttle_recorder: Optional[CsvRecorder] = None, person_recorder: Optional[CsvRecorder] = None,
-                 is_file: bool = False):
+                 is_file: bool = False, on_raw_frame=None):
+        """on_raw_frame: 何も描いていないフレームを受け取る関数 f(frame, t_wall, t_mono)(自動版の録画用)。
+        カメラのスレッドから呼ぶ。エラーが起きてもカメラの処理は止めない。"""
         self._cap = capture
         self._width, self._height = width, height
         self._intr = intrinsics.scaled_to(width, height)
@@ -71,6 +73,8 @@ class CameraWorker:
         self._shuttle_rec = shuttle_recorder
         self._person_rec = person_recorder
         self._is_file = is_file
+        self._on_raw_frame = on_raw_frame
+        self._raw_frame_error_logged = False
 
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
@@ -200,6 +204,14 @@ class CameraWorker:
         if self._start_mono is None:
             self._start_mono = t_mono
         self._frame_index += 1
+
+        if self._on_raw_frame is not None:
+            try:
+                self._on_raw_frame(frame, t_wall, t_mono)
+            except Exception as e:
+                if not self._raw_frame_error_logged:
+                    log.error("フレームの受け渡し(録画)でエラー: %s(カメラの処理は続けます)", e)
+                    self._raw_frame_error_logged = True
 
         shuttle_drawing = None
 

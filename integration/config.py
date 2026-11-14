@@ -155,7 +155,7 @@ CAMERA_MOUNT_HEIGHT_CM = 20.0
 CAMERA_TILT_DEG = -19.0          # 水平から下向きを正とする角度。上向き 19° なので −19
 
 # 発射口の位置(カメラから見て。2026-11-13 にユーザーが測った値)。左右のずれは無く、発射機の正面(yaw 0°)と
-# カメラの正面は同じ向き。自動で狙う版で使う予定で、今は未使用。
+# カメラの正面は同じ向き。自動版(auto_main.py)で使う。手動版では使わない。
 LAUNCHER_MUZZLE_BEHIND_CAMERA_CM = 25.0   # カメラより後ろ(水平方向)
 LAUNCHER_MUZZLE_ABOVE_CAMERA_CM = 115.0   # カメラより上(床からは約 135cm)
 
@@ -172,3 +172,43 @@ WINDOW_POSITION = (0, 0)
 CAMERA_WINDOW_POSITION = (970, 0)
 CAMERA_WINDOW_SIZE = (854, 480)   # 開いたときの大きさ(16:9)。マウスで変えられる
 UI_REFRESH_MS = 30            # cv2.waitKey の待ち時間
+
+# ============================================================
+# 自動版(auto_main.py)。手動版(main.py)では使わない
+# ============================================================
+
+# ---- シャトルの飛び方(ballistics.py) ----
+GRAVITY_MS2 = 9.81
+# シャトルの終端速度 [m/s]。空気抵抗は速さの2乗に比例するとして計算する(一般的な値 6.5〜7)
+SHUTTLE_TERMINAL_VELOCITY_MS = 6.8
+# 狙う高さ [cm]。0 なら「床に落ちる位置」が人の立ち位置になるように狙う
+AIM_TARGET_HEIGHT_CM = 0.0
+# 落ちる位置を、人の立ち位置からこの距離だけ奥(+)/手前(−)にずらして狙う [cm]
+AIM_LANDING_OFFSET_CM = 0.0
+
+# 強さ(1/2/3)ごとの、発射の速さ [m/s] の初期値。
+# **仮の値**(実測なし。10/31 の動画で、強いほど・上向きほど遠くへ落ちていた順番だけ合わせてある)。
+# 発射の後にターミナルで「1m足りない」などと入力すると、その記録から強さごとに合わせ直す(learning)。
+INITIAL_LAUNCH_SPEED_MS = {1: 7.0, 2: 9.0, 3: 11.5}
+LAUNCH_SPEED_FIT_RANGE_MS = (2.0, 40.0)   # 合わせ直すときに探す範囲
+
+# 自動で狙うときに使う上下の角度の範囲 [deg](水平から上向きが +。pitch はマイナスが上なので pitch = −この値)
+AIM_ELEVATION_MIN_DEG = -5.0
+AIM_ELEVATION_MAX_DEG = 45.0
+
+# ---- 自動で狙う(auto_controller.py) ----
+PERSON_SMOOTHING_SEC = 0.6      # 人の立ち位置は、この時間の中央値を使う(揺れでモーターがガタつかないように)
+PERSON_LOST_SEC = 1.0           # この時間、人を見失ったら、その場で止まる(新しい目標を出さない)
+AIM_DEADBAND_DEG = 0.5          # 目標角の変化がこれより小さければ送り直さない
+AIM_SETTLED_DEG = 1.0           # 現在角と目標角の差がこれ以下なら「狙いが合った」とする
+
+# ---- 自動で発射する(F キーでオン。起動時はオフ) ----
+AUTO_FIRE_STABLE_SEC = 1.5      # 人がこの時間ほぼ止まっていたら撃つ
+AUTO_FIRE_STABLE_CM = 30.0      # 「止まっている」とみなす立ち位置の揺れ(この時間の最大−最小)
+AUTO_FIRE_INTERVAL_SEC = 5.0    # 自動発射の間隔(前の発射からこの時間は撃たない)
+
+# ---- 記録(shots.py、session_video.py) ----
+# 発射ごとの記録(CSV)と、セッションの録画。人が映る・人の立ち位置を含むので Git の管理外(.gitignore の shots/)。
+SHOTS_DIR = _Path(__file__).resolve().parent / "shots"
+SHOTS_CSV = SHOTS_DIR / "shots.csv"       # 全セッション分を1つのファイルに追記する。学習はこのファイルから行う
+SESSION_VIDEO_FPS = 30.0                  # 録画ファイルに書く fps(実際の間隔は *_frames.csv に記録する)
