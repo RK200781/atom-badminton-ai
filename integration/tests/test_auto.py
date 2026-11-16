@@ -75,6 +75,9 @@ class FeedbackTest(unittest.TestCase):
     def test_short_and_long(self):
         self.check("1m足りない", distance=-100.0)
         self.check("50cm手前", distance=-50.0)
+        self.check("1m50cm前に落下した。プレイヤーに到達していない", distance=-150.0)
+        self.check("80cm届いていない", distance=-80.0)
+        self.check("1m到達していない", distance=-100.0)
         self.check("あと1.5メートル", distance=-150.0)
         self.check("2m超えた", distance=200.0)
         self.check("30センチ奥", distance=30.0)
